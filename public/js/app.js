@@ -219,8 +219,16 @@ async function loadPlatform(platform) {
         <div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div></div>
       </div>`).join('');
 
+    // Adicionar classe de scroll na tabela
+    const tableWrap = tbody_el => {
+      if (tbody_el) {
+        const wrap = tbody_el.closest('.table-wrap');
+        if (wrap) wrap.className = 'platform-table-wrap';
+      }
+    };
     const tbody = document.getElementById('tbody-' + platform);
     if (!tbody) return;
+    tableWrap(tbody);
 
     if (camps.length === 0) {
       tbody.innerHTML = `<tr><td colspan="20" style="text-align:center;padding:32px;color:#4a5568"><i class="ti ti-speakerphone" style="font-size:24px;display:block;margin-bottom:8px"></i>Nenhuma campanha cadastrada</td></tr>`;
