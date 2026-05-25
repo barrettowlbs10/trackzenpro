@@ -707,7 +707,9 @@ app.get('/api/meta/ad-accounts', auth, async (req, res) => {
 function adminAuth(req, res, next) {
   const db = loadDB();
   const user = db.users.find(u => u.id === req.user?.id);
-  if (!user || user.role !== 'admin') return res.status(403).json({ error: 'Acesso negado' });
+  // Admin por role OU por email do dono
+  const isAdmin = user && (user.role === 'admin' || user.email === 'demo@trackzenpro.com');
+  if (!isAdmin) return res.status(403).json({ error: 'Acesso negado' });
   next();
 }
 
