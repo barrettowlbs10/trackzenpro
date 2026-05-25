@@ -214,7 +214,7 @@ function seedDemo() {
   if (!db.events_log) { db.events_log = []; saveDB(db); }
   if (db.users.find(u => u.email === 'demo@trackzenpro.com')) return;
   const userId = 'demo-user-001';
-  db.users.push({ id:userId, name:'Usuário Demo', email:'demo@trackzenpro.com', password:bcrypt.hashSync('demo123',10), plan:'pro', events_used:78500, events_limit:100000, created_at:new Date().toISOString() });
+  db.users.push({ id:userId, name:'Usuário Demo', email:'demo@trackzenpro.com', password:bcrypt.hashSync('demo123',10), plan:'pro', role:'admin', events_used:78500, events_limit:100000, created_at:new Date().toISOString() });
   const camps = [
     {id:'c1',name:'ABO - Escala 03',platform:'meta',status:'active',budget:5000,spent:4200,impressions:48000,clicks:4385},
     {id:'c2',name:'CBO - Conversão',platform:'meta',status:'active',budget:3000,spent:2100,impressions:31200,clicks:2979},
@@ -252,6 +252,57 @@ seedDemo();
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname,'public')));
+
+
+// ===== SEGURANÇA E MULTI-USUÁRIO =====
+
+// Rate limiting simples
+const requestCounts = {};
+function rateLimit(req, res, next) {
+  const ip = req.ip || req.connection.remoteAddress;
+  const now = Date.now();
+  if (!requestCounts[ip]) requestCounts[ip] = { count: 0, resetAt: now + 60000 };
+  if (now > requestCounts[ip].resetAt) { requestCounts[ip] = { count: 0, resetAt: now + 60000 }; }
+  requestCounts[ip].count++;
+  if (requestCounts[ip].count > 100) return res.status(429).json({ error: 'Muitas requisições. Tente em 1 minuto.' });
+  next();
+}
+app.use('/api', rateLimit);
+
+// Verificar limite de eventos do plano
+function checkEventLimit(req, res, next) {
+  const db = loadDB();
+  const user = db.users.find(u => u.id === req.user?.id);
+  if (!user) return next();
+  const limits = { free: 1000, pro: 100000, scale: Infinity };
+  const limit = limits[user.plan] || 1000;
+  if ((user.events_used || 0) >= limit) {
+    return res.status(403).json({ 
+      error: 'Limite de eventos atingido', 
+      code: 'EVENT_LIMIT_REACHED',
+      plan: user.plan,
+      used: user.events_used,
+      limit 
+    });
+  }
+  next();
+}
+
+// Verificar acesso a features por plano
+function checkPlan(requiredPlan) {
+  return (req, res, next) => {
+    const db = loadDB();
+    const user = db.users.find(u => u.id === req.user?.id);
+    if (!user) return res.status(401).json({ error: 'Não autorizado' });
+    const planLevels = { free: 0, pro: 1, scale: 2 };
+    const userLevel = planLevels[user.plan] || 0;
+    const requiredLevel = planLevels[requiredPlan] || 0;
+    if (userLevel < requiredLevel) {
+      return res.status(403).json({ error: `Recurso disponível apenas no plano ${requiredPlan}`, code: 'UPGRADE_REQUIRED', requiredPlan });
+    }
+    next();
+  };
+}
 
 function auth(req,res,next){
   const token=req.headers.authorization?.split(' ')[1];
@@ -649,6 +700,83 @@ app.get('/api/meta/ad-accounts', auth, async (req, res) => {
     if (result.error) return res.status(400).json({ error: result.error.message });
     res.json({ success: true, accounts: result.data || [] });
   } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+
+// ===== ADMIN ROUTES =====
+function adminAuth(req, res, next) {
+  const db = loadDB();
+  const user = db.users.find(u => u.id === req.user?.id);
+  if (!user || user.role !== 'admin') return res.status(403).json({ error: 'Acesso negado' });
+  next();
+}
+
+// Listar todos os usuários (admin)
+app.get('/api/admin/users', auth, adminAuth, (req, res) => {
+  const db = loadDB();
+  const users = db.users.map(u => {
+    const { password, ...safe } = u;
+    const salesCount = db.sales.filter(s => s.user_id === u.id).length;
+    return { ...safe, salesCount };
+  });
+  res.json(users);
+});
+
+// Atualizar plano do usuário (admin)
+app.patch('/api/admin/users/:id/plan', auth, adminAuth, (req, res) => {
+  const db = loadDB();
+  const user = db.users.find(u => u.id === req.params.id);
+  if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+  const { plan, events_limit } = req.body;
+  if (plan) user.plan = plan;
+  if (events_limit) user.events_limit = events_limit;
+  saveDB(db);
+  res.json({ success: true });
+});
+
+// Tornar usuário admin
+app.patch('/api/admin/users/:id/role', auth, adminAuth, (req, res) => {
+  const db = loadDB();
+  const user = db.users.find(u => u.id === req.params.id);
+  if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+  user.role = req.body.role;
+  saveDB(db);
+  res.json({ success: true });
+});
+
+// Stats gerais (admin)
+app.get('/api/admin/stats', auth, adminAuth, (req, res) => {
+  const db = loadDB();
+  res.json({
+    totalUsers: db.users.length,
+    totalSales: db.sales.length,
+    totalRevenue: db.sales.filter(s => s.status === 'approved').reduce((s, v) => s + v.value, 0),
+    planBreakdown: {
+      free: db.users.filter(u => u.plan === 'free').length,
+      pro: db.users.filter(u => u.plan === 'pro').length,
+      scale: db.users.filter(u => u.plan === 'scale').length,
+    },
+    recentUsers: db.users.slice(-5).map(u => { const {password,...s}=u; return s; })
+  });
+});
+
+// Ativar plano manualmente (para quando receber pagamento)
+app.post('/api/activate-plan', auth, (req, res) => {
+  const { plan, activation_code } = req.body;
+  // Código simples de ativação — você envia manualmente para o usuário após pagamento
+  const validCodes = {
+    'TRACKZEN-PRO-2024': 'pro',
+    'TRACKZEN-SCALE-2024': 'scale',
+  };
+  if (!validCodes[activation_code]) return res.status(400).json({ error: 'Código inválido' });
+  const db = loadDB();
+  const user = db.users.find(u => u.id === req.user.id);
+  if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+  user.plan = validCodes[activation_code];
+  user.events_limit = user.plan === 'pro' ? 100000 : 999999999;
+  user.plan_activated_at = new Date().toISOString();
+  saveDB(db);
+  res.json({ success: true, plan: user.plan });
 });
 
 app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'public/index.html')));

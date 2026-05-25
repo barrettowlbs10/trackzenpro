@@ -59,6 +59,7 @@ function startApp() {
   }
   loadSummary('today');
   loadUserInfo();
+  checkAdminAccess();
 }
 
 window.onload = () => { if (TOKEN && USER) startApp(); };
@@ -77,6 +78,7 @@ const pageTitles = {
   notificacoes: ['Notificações', 'Configure seus alertas de venda'],
   assinatura: ['Assinatura', 'Gerencie seu plano e cobrança'],
   conta: ['Minha conta', 'Dados pessoais e configurações'],
+  admin: ['Painel Admin', 'Gerencie usuários e planos da plataforma'],
 };
 
 function navigate(id, el) {
@@ -97,6 +99,7 @@ function navigate(id, el) {
   if (id === 'notificacoes') loadNotifications();
   if (id === 'assinatura') loadSubscription();
   if (id === 'conta') loadAccount();
+  if (id === 'admin') loadAdmin();
 }
 
 function refreshPage() {
@@ -709,4 +712,81 @@ async function loadMetaRealData() {
 function showMetaSetupIfNeeded() {
   const card = document.getElementById('meta-setup-card');
   if (card) card.style.display = metaConfigured ? 'none' : 'block';
+}
+
+// ===== ADMIN =====
+async function loadAdmin() {
+  try {
+    const [statsR, usersR] = await Promise.all([
+      fetch(`${API}/admin/stats`, { headers: headers() }),
+      fetch(`${API}/admin/users`, { headers: headers() })
+    ]);
+    
+    if (!statsR.ok) { console.log('Não é admin'); return; }
+    
+    const stats = await statsR.json();
+    const users = await usersR.json();
+
+    document.getElementById('admin-stats').innerHTML = [
+      { lbl: 'Total usuários', val: stats.totalUsers, ico: 'ti-users', bg: '#1e3a5f', ic: '#60a5fa' },
+      { lbl: 'Total vendas', val: stats.totalSales, ico: 'ti-shopping-cart', bg: '#14532d', ic: '#4ade80' },
+      { lbl: 'Receita total', val: R(stats.totalRevenue), ico: 'ti-currency-dollar', bg: '#2e1a4f', ic: '#a78bfa' },
+      { lbl: 'Planos Pro/Scale', val: (stats.planBreakdown.pro || 0) + (stats.planBreakdown.scale || 0), ico: 'ti-crown', bg: '#422006', ic: '#fb923c' },
+    ].map(k => `
+      <div class="kpi">
+        <div class="kpi-ico" style="background:${k.bg}"><i class="ti ${k.ico}" style="color:${k.ic}"></i></div>
+        <div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div></div>
+      </div>`).join('');
+
+    document.getElementById('tbody-admin-users').innerHTML = users.map(u => `
+      <tr>
+        <td><div class="cn">${u.name}</div></td>
+        <td style="color:#6b7280">${u.email}</td>
+        <td>
+          <select onchange="updateUserPlan('${u.id}', this.value)" style="background:#1a1e2e;border:1px solid #2d3348;border-radius:5px;color:#e2e8f0;padding:3px 6px;font-size:10px">
+            <option value="free" ${u.plan==='free'?'selected':''}>Free</option>
+            <option value="pro" ${u.plan==='pro'?'selected':''}>Pro</option>
+            <option value="scale" ${u.plan==='scale'?'selected':''}>Scale</option>
+          </select>
+        </td>
+        <td>${(u.events_used||0).toLocaleString('pt-BR')} / ${(u.events_limit||1000).toLocaleString('pt-BR')}</td>
+        <td>${u.salesCount || 0}</td>
+        <td style="color:#6b7280">${new Date(u.created_at).toLocaleDateString('pt-BR')}</td>
+        <td>
+          <button onclick="resetUserEvents('${u.id}')" class="btn-upd" style="font-size:10px;padding:3px 8px">
+            <i class="ti ti-refresh" style="font-size:11px"></i> Reset eventos
+          </button>
+        </td>
+      </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;padding:24px;color:#4a5568">Nenhum usuário</td></tr>';
+
+  } catch(e) { console.error('Erro admin:', e); }
+}
+
+async function updateUserPlan(userId, plan) {
+  const limits = { free: 1000, pro: 100000, scale: 999999999 };
+  await fetch(`${API}/admin/users/${userId}/plan`, {
+    method: 'PATCH', headers: headers(),
+    body: JSON.stringify({ plan, events_limit: limits[plan] })
+  });
+  alert(`✅ Plano atualizado para ${plan}!`);
+}
+
+async function resetUserEvents(userId) {
+  const db_resp = await fetch(`${API}/admin/users/${userId}/plan`, {
+    method: 'PATCH', headers: headers(),
+    body: JSON.stringify({ events_used: 0 })
+  });
+  alert('✅ Eventos resetados!');
+  loadAdmin();
+}
+
+// Mostrar/esconder admin na sidebar baseado no papel do usuário
+async function checkAdminAccess() {
+  try {
+    const r = await fetch(`${API}/admin/stats`, { headers: headers() });
+    if (r.ok) {
+      const nav = document.getElementById('nav-admin');
+      if (nav) nav.style.display = 'flex';
+    }
+  } catch {}
 }
