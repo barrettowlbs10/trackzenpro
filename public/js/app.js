@@ -782,14 +782,17 @@ async function resetUserEvents(userId) {
 
 // Mostrar/esconder admin na sidebar baseado no papel do usuário
 function checkAdminAccess() {
-  // Mostrar admin para o dono da plataforma
-  if (!USER) return;
-  const adminEmails = ['demo@trackzenpro.com'];
-  if (adminEmails.includes(USER.email) || USER.role === 'admin') {
-    const nav = document.getElementById('nav-admin');
-    if (nav) {
-      nav.removeAttribute('style');
-      nav.style.display = 'flex';
-    }
-  }
+  setTimeout(() => {
+    try {
+      const storedUser = JSON.parse(localStorage.getItem('tzuser') || '{}');
+      const adminEmails = ['demo@trackzenpro.com'];
+      const nav = document.getElementById('nav-admin');
+      if (!nav) { console.log('nav-admin element not found'); return; }
+      if (adminEmails.includes(storedUser.email)) {
+        nav.removeAttribute('style');
+        nav.style.cssText = 'display:flex !important;align-items:center;gap:8px;padding:7px 12px;border-radius:7px;cursor:pointer;color:#a78bfa;font-size:12px;margin:1px 6px;';
+        console.log('Admin shown for:', storedUser.email);
+      }
+    } catch(e) { console.error('Admin check error:', e); }
+  }, 800);
 }
