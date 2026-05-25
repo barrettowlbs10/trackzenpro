@@ -1,1 +1,107 @@
-{"users":[],"sales":[],"campaigns":[],"pixels":[],"rules":[],"utms":[],"notifications":[],"events_log":[]}
+{
+  "users": [
+    {
+      "id": "demo-user-001",
+      "name": "Usuário Demo",
+      "email": "demo@trackzenpro.com",
+      "password": "$2a$10$AKJZt2RlbLR6/f2SsPPJcedjQDDoZucaG02NaC9NtUWdu2zHl2Opy",
+      "plan": "pro",
+      "role": "admin",
+      "events_used": 0,
+      "events_limit": 100000,
+      "created_at": "2026-05-25T20:54:00.089Z",
+      "last_access": "2026-05-25T21:27:51.789Z"
+    },
+    {
+      "id": "576d4644-12e6-448b-86a4-e19b2d03dfe6",
+      "name": "William Teste",
+      "email": "william-1779743741412@example.com",
+      "whatsapp": "+55 (11) 98888-7777",
+      "password": "$2a$10$lr7mRZ2uAgQXMm.6NXipGuoHbuzN9uzaGArN8itEf2hS79RfEFPFm",
+      "plan": "free",
+      "subscription_status": "active",
+      "blocked": 0,
+      "last_access": "2026-05-25T21:15:41.665Z",
+      "events_used": 1,
+      "events_limit": 1000,
+      "created_at": "2026-05-25T21:15:41.567Z"
+    }
+  ],
+  "sales": [
+    {
+      "id": "9579b7e7-4f40-4e8f-b414-ac1e47a3898e",
+      "user_id": "576d4644-12e6-448b-86a4-e19b2d03dfe6",
+      "platform": "meta",
+      "campaign": "",
+      "utm_source": "instagram",
+      "utm_medium": "",
+      "utm_campaign": "",
+      "utm_content": "",
+      "value": 47.9,
+      "status": "approved",
+      "payment_method": "unknown",
+      "product": "Ebook Tráfego Pro",
+      "email": "",
+      "phone": "",
+      "ip": "::1",
+      "user_agent": "",
+      "device": "Mobile",
+      "geo": "Brasil / Belo Horizonte",
+      "raw": "{\"product\":\"Ebook Tráfego Pro\",\"value\":47.9,\"status\":\"approved\",\"platform\":\"meta\",\"utm_source\":\"instagram\",\"device\":\"Mobile\",\"country\":\"Brasil\",\"city\":\"Belo Horizonte\"}",
+      "created_at": "2026-05-25T21:15:41.605Z"
+    }
+  ],
+  "campaigns": [],
+  "pixels": [],
+  "rules": [],
+  "utms": [],
+  "notifications": [
+    {
+      "id": "171921e3-e174-4df1-aebd-555440e87659",
+      "user_id": "576d4644-12e6-448b-86a4-e19b2d03dfe6",
+      "title": "🛒 Venda aprovada — R$47.90",
+      "message": "Ebook Tráfego Pro · via instagram · unknown",
+      "type": "success",
+      "read": 0,
+      "created_at": "2026-05-25T21:15:41.606Z"
+    }
+  ],
+  "events_log": [],
+  "admin_logs": [
+    {
+      "id": "6012897a-361b-459c-a6f7-1faa89d7df16",
+      "type": "delete_user",
+      "message": "Usuário William Teste excluído do sistema",
+      "details": "E-mail: william-1779744471667@example.com",
+      "created_at": "2026-05-25T21:27:51.790Z"
+    },
+    {
+      "id": "02630a52-c6aa-4e77-94d2-cf5a5f24fe7a",
+      "type": "sale",
+      "message": "Venda de R$ 47.90 - Ebook Tráfego Pro",
+      "details": "Cliente: William Teste (william-1779744471667@example.com) | Plataforma: meta",
+      "created_at": "2026-05-25T21:27:51.727Z"
+    },
+    {
+      "id": "6e4c3134-4b46-4918-887f-ddc5b0927130",
+      "type": "delete_user",
+      "message": "Usuário William Teste excluído do sistema",
+      "details": "E-mail: william-1779743754981@example.com",
+      "created_at": "2026-05-25T21:15:55.151Z"
+    },
+    {
+      "id": "fc61e255-137d-4007-aa3f-88dea1b5bb37",
+      "type": "sale",
+      "message": "Venda de R$ 47.90 - Ebook Tráfego Pro",
+      "details": "Cliente: William Teste (william-1779743754981@example.com) | Plataforma: meta",
+      "created_at": "2026-05-25T21:15:55.040Z"
+    },
+    {
+      "id": "cfd08c3b-1452-4d03-8349-6f10ac73dbee",
+      "type": "sale",
+      "message": "Venda de R$ 47.90 - Ebook Tráfego Pro",
+      "details": "Cliente: William Teste (william-1779743741412@example.com) | Plataforma: meta",
+      "created_at": "2026-05-25T21:15:41.606Z"
+    }
+  ]
+}

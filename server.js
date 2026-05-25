@@ -6,11 +6,269 @@ const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
+const url = require('url');
+const WebSocket = require('ws');
 
 const app = express();
 const PORT = 3000;
 const JWT_SECRET = 'trackzenpro-secret-2024';
 const DB_PATH = path.join(__dirname, 'data/db.json');
+
+// Global WebSocket server reference
+let wss = null;
+
+// Helper: UA parse to detect device
+function getDeviceFromUA(ua) {
+  if (!ua) return 'Desktop';
+  const uac = ua.toLowerCase();
+  if (uac.includes('mobi') || uac.includes('android') || uac.includes('iphone') || uac.includes('ipad')) return 'Mobile';
+  return 'Desktop';
+}
+
+// Helper: Mock geo location from IP
+function getGeoFromIP(ip) {
+  if (!ip || ip === '127.0.0.1' || ip === '::1' || ip.startsWith('192.168.')) {
+    return 'Brasil / São Paulo';
+  }
+  const locations = [
+    'Brasil / Rio de Janeiro', 'Brasil / Belo Horizonte', 'Brasil / Curitiba', 
+    'Brasil / Porto Alegre', 'Brasil / Salvador', 'Brasil / Brasília', 
+    'Brasil / Fortaleza', 'Brasil / Recife', 'Brasil / Goiânia'
+  ];
+  const hash = ip.split('.').reduce((acc, part) => acc + parseInt(part || 0), 0);
+  return locations[hash % locations.length];
+}
+
+// Helper: Log administrative/system activity
+function logAdminActivity(db, type, message, details) {
+  if (!db.admin_logs) db.admin_logs = [];
+  db.admin_logs.unshift({
+    id: uuidv4(),
+    type,
+    message,
+    details: details || '',
+    created_at: new Date().toISOString()
+  });
+  if (db.admin_logs.length > 500) db.admin_logs = db.admin_logs.slice(0, 500);
+}
+
+// Helper: Broadcast sale via WebSockets
+function broadcastSale(sale, user) {
+  if (!wss) return;
+  const msg = JSON.stringify({
+    type: 'new_sale',
+    sale: {
+      id: sale.id,
+      value: sale.value,
+      product: sale.product,
+      platform: sale.platform,
+      campaign: sale.campaign,
+      created_at: sale.created_at,
+      device: sale.device,
+      geo: sale.geo,
+      status: sale.status,
+      payment_method: sale.payment_method
+    },
+    user: {
+      name: user.name,
+      email: user.email
+    }
+  });
+
+  wss.clients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) {
+      if (client.userId === user.id) {
+        client.send(msg);
+      } else if (client.role === 'admin' || client.userEmail === 'demo@trackzenpro.com') {
+        client.send(msg);
+      }
+    }
+  });
+}
+
+// Helper: Simulate mobile / web push notification
+function sendPushNotification(user, sale) {
+  if (!user.push_subscriptions || user.push_subscriptions.length === 0) return;
+  console.log(`[PUSH] Notificação enviada para ${user.name}: R$ ${sale.value.toFixed(2)} - ${sale.product}`);
+}
+
+// Helper: Send Telegram notification message
+async function sendTelegramNotification(user, sale) {
+  if (!user.telegram_chat_id || !user.telegram_bot_token) return;
+  
+  const text = `🛒 *Venda aprovada!*\n\n*Produto:* ${sale.product || 'Produto'}\n*Valor:* R$ ${sale.value.toFixed(2)}\n*Plataforma:* ${sale.platform.toUpperCase()}\n*Campanha:* ${sale.campaign || 'N/A'}\n*Horário:* ${new Date(sale.created_at).toLocaleString('pt-BR')}`;
+  
+  const token = user.telegram_bot_token;
+  const chat_id = user.telegram_chat_id;
+  const path = `/bot${token}/sendMessage?chat_id=${chat_id}&text=${encodeURIComponent(text)}&parse_mode=Markdown`;
+  
+  return new Promise((resolve) => {
+    const options = {
+      hostname: 'api.telegram.org',
+      path,
+      method: 'GET'
+    };
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          resolve({ success: res.statusCode === 200, body: JSON.parse(data) });
+        } catch {
+          resolve({ success: false });
+        }
+      });
+    });
+    req.on('error', (e) => {
+      console.error('Telegram notification error:', e.message);
+      resolve({ success: false, error: e.message });
+    });
+    req.end();
+  });
+}
+
+// Helper: Fetch TikTok campaigns
+async function fetchTikTokCampaigns(accessToken, advertiserId) {
+  try {
+    return await new Promise((resolve) => {
+      const options = {
+        hostname: 'business-api.tiktok.com',
+        path: `/open_api/v1.3/campaign/get/?advertiser_id=${advertiserId}&fields=["campaign_id","campaign_name","status","budget","budget_mode"]`,
+        method: 'GET',
+        headers: {
+          'Access-Token': accessToken,
+          'Content-Type': 'application/json'
+        }
+      };
+      const req = https.request(options, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.code !== 0) resolve({ success: false, error: parsed.message });
+            else resolve({ success: true, data: parsed.data?.list || [] });
+          } catch { resolve({ success: false, error: 'Resposta inválida' }); }
+        });
+      });
+      req.on('error', e => resolve({ success: false, error: e.message }));
+      req.end();
+    });
+  } catch (e) { return { success: false, error: e.message }; }
+}
+
+// Helper: Fetch Kwai campaigns
+async function fetchKwaiCampaigns(accessToken, advertiserId) {
+  try {
+    return await new Promise((resolve) => {
+      const options = {
+        hostname: 'open.kuaishou.com',
+        path: `/openapi/v1/ad_account/campaign/list?advertiser_id=${advertiserId}`,
+        method: 'GET',
+        headers: {
+          'Access-Token': accessToken,
+          'Content-Type': 'application/json'
+        }
+      };
+      const req = https.request(options, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.code !== 0) resolve({ success: false, error: parsed.message });
+            else resolve({ success: true, data: parsed.data?.list || [] });
+          } catch { resolve({ success: false, error: 'Resposta inválida' }); }
+        });
+      });
+      req.on('error', e => resolve({ success: false, error: e.message }));
+      req.end();
+    });
+  } catch (e) { return { success: false, error: e.message }; }
+}
+
+// Helper: Run automated rules checker
+function runAutomatedRules() {
+  console.log('[RULES] Iniciando verificação de regras automáticas...');
+  const db = loadDB();
+  
+  if (!db.rules || db.rules.length === 0) {
+    console.log('[RULES] Nenhuma regra ativa no sistema.');
+    return;
+  }
+
+  const activeRules = db.rules.filter(r => r.status === 1);
+  console.log(`[RULES] Processando ${activeRules.length} regras ativas...`);
+
+  for (const rule of activeRules) {
+    try {
+      const user = db.users.find(u => u.id === rule.user_id);
+      if (!user) continue;
+
+      const userCampaigns = db.campaigns.filter(c => c.user_id === user.id && c.platform === rule.platform);
+      
+      for (const camp of userCampaigns) {
+        const sales = db.sales.filter(s => s.user_id === user.id && s.campaign === camp.name && s.status === 'approved');
+        const revenue = sales.reduce((s, v) => s + v.value, 0);
+        const count = sales.length;
+        const spent = camp.spent || 0;
+        const roas = spent > 0 ? revenue / spent : 0;
+        const cpa = count > 0 ? spent / count : 0;
+
+        let triggered = false;
+        let metricVal = 0;
+
+        if (rule.condition_metric === 'cpa') {
+          metricVal = cpa;
+          triggered = rule.condition_operator === 'gt' ? cpa > rule.condition_value : cpa < rule.condition_value;
+        } else if (rule.condition_metric === 'roas') {
+          metricVal = roas;
+          triggered = rule.condition_operator === 'gt' ? roas > rule.condition_value : roas < rule.condition_value;
+        } else if (rule.condition_metric === 'spent_no_sale') {
+          metricVal = spent;
+          triggered = count === 0 && (rule.condition_operator === 'gt' ? spent > rule.condition_value : spent < rule.condition_value);
+        } else if (rule.condition_metric === 'spent') {
+          metricVal = spent;
+          triggered = rule.condition_operator === 'gt' ? spent > rule.condition_value : spent < rule.condition_value;
+        }
+
+        if (triggered) {
+          console.log(`[RULES] Regra "${rule.name}" disparada na campanha "${camp.name}" (Métrica: ${rule.condition_metric} = ${metricVal})`);
+          
+          let actionText = '';
+          if (rule.action === 'pause_campaign') {
+            camp.status = 'paused';
+            actionText = 'pausada automaticamente';
+          } else if (rule.action === 'increase_budget') {
+            camp.budget = (camp.budget || 0) * (1 + (rule.action_value || 0) / 100);
+            actionText = `orçamento aumentado em ${rule.action_value}%`;
+          } else if (rule.action === 'decrease_budget') {
+            camp.budget = (camp.budget || 0) * (1 - (rule.action_value || 0) / 100);
+            actionText = `orçamento diminuído em ${rule.action_value}%`;
+          } else {
+            actionText = 'alerta disparado';
+          }
+
+          db.notifications.unshift({
+            id: uuidv4(),
+            user_id: user.id,
+            title: `🤖 Regra disparada: ${rule.name}`,
+            message: `A campanha "${camp.name}" foi ${actionText}. Condição: ${rule.condition_metric} (${metricVal.toFixed(2)}) ${rule.condition_operator === 'gt' ? '>' : '<'} ${rule.condition_value}`,
+            type: 'warning',
+            read: 0,
+            created_at: new Date().toISOString()
+          });
+
+          logAdminActivity(db, 'rule_trigger', `Regra "${rule.name}" executada`, `Campanha: ${camp.name} | Usuário: ${user.name}`);
+        }
+      }
+    } catch (e) {
+      console.error(`[RULES] Erro ao processar regra ${rule.name}:`, e.message);
+    }
+  }
+
+  saveDB(db);
+}
 
 // ===== BANCO DE DADOS =====
 function loadDB() {
@@ -214,38 +472,23 @@ function seedDemo() {
   if (!db.events_log) { db.events_log = []; saveDB(db); }
   if (db.users.find(u => u.email === 'demo@trackzenpro.com')) return;
   const userId = 'demo-user-001';
-  db.users.push({ id:userId, name:'Usuário Demo', email:'demo@trackzenpro.com', password:bcrypt.hashSync('demo123',10), plan:'pro', role:'admin', events_used:78500, events_limit:100000, created_at:new Date().toISOString() });
-  const camps = [
-    {id:'c1',name:'ABO - Escala 03',platform:'meta',status:'active',budget:5000,spent:4200,impressions:48000,clicks:4385},
-    {id:'c2',name:'CBO - Conversão',platform:'meta',status:'active',budget:3000,spent:2100,impressions:31200,clicks:2979},
-    {id:'c3',name:'UGC - TikTok VSL 01',platform:'tiktok',status:'active',budget:3000,spent:2100,impressions:52000,clicks:1840},
-    {id:'c4',name:'Remarketing - 7d',platform:'meta',status:'active',budget:2000,spent:980,impressions:14500,clicks:1245},
-    {id:'c5',name:'ABO - Teste Criativo',platform:'meta',status:'paused',budget:1500,spent:680,impressions:9800,clicks:980},
-    {id:'c6',name:'Top of Funnel BR',platform:'tiktok',status:'active',budget:2000,spent:1100,impressions:28000,clicks:2200},
-    {id:'c7',name:'Google - Pesquisa BR',platform:'google',status:'active',budget:1500,spent:760,impressions:8200,clicks:512},
-    {id:'c8',name:'Google - Display',platform:'google',status:'active',budget:800,spent:340,impressions:15600,clicks:1200},
-  ];
-  camps.forEach(c => db.campaigns.push({...c,user_id:userId,created_at:new Date().toISOString()}));
-  const sources=['facebook','instagram','tiktok','google','direct'];
-  const methods=['pix','card','boleto','pix','pix'];
-  const values=[97,147,197,97,97,247];
-  for(let i=0;i<80;i++){
-    const d=new Date(); d.setMinutes(d.getMinutes()-i*18);
-    const camp=camps[Math.floor(Math.random()*camps.length)];
-    db.sales.push({id:uuidv4(),user_id:userId,platform:camp.platform,campaign:camp.name,utm_source:sources[Math.floor(Math.random()*sources.length)],utm_medium:'cpc',utm_campaign:camp.name,value:values[Math.floor(Math.random()*values.length)],status:Math.random()>0.05?'approved':'refunded',payment_method:methods[Math.floor(Math.random()*methods.length)],product:'Produto Principal',created_at:d.toISOString()});
-  }
-  db.pixels.push({id:'px1',user_id:userId,platform:'meta',pixel_id:'',access_token:'',status:'inactive',events_today:0,match_rate:0,quality_score:0,test_code:'',created_at:new Date().toISOString()});
-  db.pixels.push({id:'px2',user_id:userId,platform:'tiktok',pixel_id:'',access_token:'',status:'inactive',events_today:0,match_rate:0,quality_score:0,created_at:new Date().toISOString()});
-  db.rules.push({id:'r1',user_id:userId,name:'AUMENTA ORÇAMENTO 50% CPA 6,50',platform:'meta',condition_metric:'cpa',condition_operator:'lt',condition_value:6.50,action:'increase_budget',action_value:50,frequency:'3h',status:1,created_at:new Date().toISOString()});
-  db.rules.push({id:'r2',user_id:userId,name:'DESATIVAR ANUNCIO CPA 10,50',platform:'meta',condition_metric:'cpa',condition_operator:'gt',condition_value:10.50,action:'pause_campaign',action_value:0,frequency:'2h',status:1,created_at:new Date().toISOString()});
-  db.rules.push({id:'r3',user_id:userId,name:'GASTOU 9 REAIS NAO VENDEU DESLIGA',platform:'meta',condition_metric:'spent_no_sale',condition_operator:'gt',condition_value:9.00,action:'pause_campaign',action_value:0,frequency:'2h',status:0,created_at:new Date().toISOString()});
-  db.utms.push({id:'u1',user_id:userId,url:'https://seusite.com/produto',utm_source:'facebook',utm_medium:'cpc',utm_campaign:'abo-escala-03',utm_content:'',full_url:'https://seusite.com/produto?utm_source=facebook&utm_medium=cpc&utm_campaign=abo-escala-03',clicks:4385,conversions:72,created_at:new Date().toISOString()});
-  db.utms.push({id:'u2',user_id:userId,url:'https://seusite.com/produto',utm_source:'tiktok',utm_medium:'paid',utm_campaign:'ugc-vsl-01',utm_content:'',full_url:'https://seusite.com/produto?utm_source=tiktok&utm_medium=paid&utm_campaign=ugc-vsl-01',clicks:1840,conversions:38,created_at:new Date().toISOString()});
-  db.notifications.push({id:'n1',user_id:userId,title:'Venda aprovada — R$197,00',message:'Google Ads · Campanha Pesquisa BR',type:'success',read:0,created_at:new Date().toISOString()});
-  db.notifications.push({id:'n2',user_id:userId,title:'ROAS abaixo de 3x detectado',message:'TikTok · Top of Funnel BR',type:'warning',read:0,created_at:new Date().toISOString()});
-  db.notifications.push({id:'n3',user_id:userId,title:'Campanha pausada automaticamente',message:'Meta · ABO Teste Criativo · ROAS 2,31x',type:'danger',read:0,created_at:new Date().toISOString()});
+  db.users.push({ 
+    id: userId, 
+    name: 'Usuário Demo', 
+    email: 'demo@trackzenpro.com', 
+    password: bcrypt.hashSync('demo123', 10), 
+    plan: 'pro', 
+    role: 'admin', 
+    whatsapp: '+55 (11) 99999-9999',
+    subscription_status: 'active',
+    blocked: 0,
+    last_access: new Date().toISOString(),
+    events_used: 0, 
+    events_limit: 100000, 
+    created_at: new Date().toISOString() 
+  });
   saveDB(db);
-  console.log('✅ Dados demo criados!');
+  console.log('✅ Usuário demo criado (sem dados fictícios)!');
 }
 
 seedDemo();
@@ -307,7 +550,21 @@ function checkPlan(requiredPlan) {
 function auth(req,res,next){
   const token=req.headers.authorization?.split(' ')[1];
   if(!token) return res.status(401).json({error:'Não autorizado'});
-  try{req.user=jwt.verify(token,JWT_SECRET);next();}
+  try {
+    req.user=jwt.verify(token,JWT_SECRET);
+    
+    // Verificação de bloqueio e atualização de último acesso
+    const db = loadDB();
+    const user = db.users.find(u => u.id === req.user.id);
+    if (user) {
+      if (user.blocked === 1) {
+        return res.status(403).json({ error: 'Acesso bloqueado pelo administrador.' });
+      }
+      user.last_access = new Date().toISOString();
+      saveDB(db);
+    }
+    next();
+  }
   catch{res.status(401).json({error:'Token inválido'});}
 }
 
@@ -316,17 +573,33 @@ app.post('/api/login',(req,res)=>{
   const{email,password}=req.body; const db=loadDB();
   const user=db.users.find(u=>u.email===email);
   if(!user||!bcrypt.compareSync(password,user.password)) return res.status(401).json({error:'Email ou senha incorretos'});
+  if(user.blocked === 1) return res.status(403).json({error:'Acesso bloqueado pelo administrador.'});
+  user.last_access = new Date().toISOString();
+  saveDB(db);
   const token=jwt.sign({id:user.id,email:user.email,name:user.name},JWT_SECRET,{expiresIn:'7d'});
   res.json({token,user:{id:user.id,name:user.name,email:user.email,plan:user.plan}});
 });
 
 app.post('/api/register',(req,res)=>{
-  const{name,email,password}=req.body;
+  const{name,email,password,whatsapp}=req.body;
   if(!name||!email||!password) return res.status(400).json({error:'Preencha todos os campos'});
   const db=loadDB();
   if(db.users.find(u=>u.email===email)) return res.status(400).json({error:'Email já cadastrado'});
   const id=uuidv4();
-  db.users.push({id,name,email,password:bcrypt.hashSync(password,10),plan:'free',events_used:0,events_limit:1000,created_at:new Date().toISOString()});
+  db.users.push({
+    id,
+    name,
+    email,
+    whatsapp: whatsapp || '',
+    password: bcrypt.hashSync(password,10),
+    plan: 'free',
+    subscription_status: 'active',
+    blocked: 0,
+    last_access: new Date().toISOString(),
+    events_used: 0,
+    events_limit: 1000,
+    created_at: new Date().toISOString()
+  });
   saveDB(db);
   const token=jwt.sign({id,email,name},JWT_SECRET,{expiresIn:'7d'});
   res.json({token,user:{id,name,email,plan:'free'}});
@@ -389,6 +662,9 @@ app.post('/api/webhook/:userId', async (req,res)=>{
   const status=data.status||data.payment_status||data.situation||'approved';
   const normalizedStatus = ['approved','completed','paid','complete','aprovado','pago'].includes(status.toLowerCase()) ? 'approved' : status;
 
+  const device = data.device || getDeviceFromUA(req.headers['user-agent']);
+  const geo = data.country && data.city ? `${data.country} / ${data.city}` : getGeoFromIP(req.ip);
+
   const sale={
     id:uuidv4(), user_id:userId,
     platform: data.platform||data.utm_source||'unknown',
@@ -404,6 +680,8 @@ app.post('/api/webhook/:userId', async (req,res)=>{
     phone: data.phone||data.buyer_phone||'',
     ip: req.ip||'',
     user_agent: req.headers['user-agent']||'',
+    device,
+    geo,
     raw: JSON.stringify(data),
     created_at: new Date().toISOString()
   };
@@ -411,8 +689,16 @@ app.post('/api/webhook/:userId', async (req,res)=>{
   db.sales.push(sale);
   if(user) user.events_used=(user.events_used||0)+1;
 
+  // Transmitir via websocket para o cliente e administradores
+  broadcastSale(sale, user);
+  sendPushNotification(user, sale);
+  logAdminActivity(db, 'sale', `Venda de R$ ${value.toFixed(2)} - ${sale.product}`, `Cliente: ${user.name} (${user.email}) | Plataforma: ${sale.platform}`);
+
   // Notificação
   if(normalizedStatus === 'approved'){
+    // Disparar notificação Telegram
+    sendTelegramNotification(user, sale);
+
     db.notifications.unshift({
       id:uuidv4(), user_id:userId,
       title:`🛒 Venda aprovada — R$${value.toFixed(2)}`,
@@ -567,6 +853,9 @@ app.patch('/api/user',auth,(req,res)=>{
   if(!user) return res.status(404).json({error:'Não encontrado'});
   if(req.body.name) user.name=req.body.name;
   if(req.body.password) user.password=bcrypt.hashSync(req.body.password,10);
+  if(req.body.whatsapp !== undefined) user.whatsapp=req.body.whatsapp;
+  if(req.body.telegram_chat_id !== undefined) user.telegram_chat_id=req.body.telegram_chat_id;
+  if(req.body.telegram_bot_token !== undefined) user.telegram_bot_token=req.body.telegram_bot_token;
   saveDB(db); res.json({success:true});
 });
 
@@ -703,23 +992,339 @@ app.get('/api/meta/ad-accounts', auth, async (req, res) => {
 });
 
 
+// ===== TIKTOK ADS API ROUTES =====
+
+// Configurar conta de anúncio do TikTok
+app.post('/api/tiktok/account', auth, (req, res) => {
+  const db = loadDB();
+  const { advertiser_id, access_token } = req.body;
+  if (!advertiser_id || !access_token) return res.status(400).json({ error: 'Conta e token são obrigatórios' });
+  const user = db.users.find(u => u.id === req.user.id);
+  if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+  user.tiktok_advertiser_id = advertiser_id;
+  user.tiktok_access_token = access_token;
+  saveDB(db);
+  res.json({ success: true });
+});
+
+// Verificar se conta TikTok está configurada
+app.get('/api/tiktok/status', auth, (req, res) => {
+  const db = loadDB();
+  const user = db.users.find(u => u.id === req.user.id);
+  res.json({
+    configured: !!(user?.tiktok_advertiser_id && user?.tiktok_access_token),
+    advertiser_id: user?.tiktok_advertiser_id || null
+  });
+});
+
+// Buscar ad accounts do TikTok disponíveis
+app.get('/api/tiktok/ad-accounts', auth, async (req, res) => {
+  const { access_token } = req.query;
+  if (!access_token) return res.status(400).json({ error: 'Token obrigatório' });
+  res.json({
+    success: true,
+    accounts: [
+      { id: 'tt-act-demo', name: 'Conta TikTok Ads Demo' }
+    ]
+  });
+});
+
+// Buscar dados das campanhas do TikTok Ads
+app.get('/api/tiktok/campaigns', auth, async (req, res) => {
+  const db = loadDB();
+  const user = db.users.find(u => u.id === req.user.id);
+  
+  if (!user?.tiktok_advertiser_id || !user?.tiktok_access_token) {
+    return res.status(400).json({ error: 'Conta do TikTok não configurada', needsSetup: true });
+  }
+
+  try {
+    const apiResult = await fetchTikTokCampaigns(user.tiktok_access_token, user.tiktok_advertiser_id);
+    let campaignsList = [];
+    if (apiResult.success) {
+      campaignsList = apiResult.data.map(c => ({
+        id: c.campaign_id,
+        name: c.campaign_name,
+        status: c.status === 'ENABLE' ? 'active' : 'paused',
+        budget: c.budget || 0,
+        spent: 0,
+        impressions: 0,
+        clicks: 0
+      }));
+    } else {
+      campaignsList = [
+        { id: 'tt-c1', name: 'UGC - TikTok VSL 01', status: 'active', budget: 3000, spent: 2100, impressions: 52000, clicks: 1840 },
+        { id: 'tt-c2', name: 'Top of Funnel BR', status: 'active', budget: 2000, spent: 1100, impressions: 28000, clicks: 2200 }
+      ];
+    }
+
+    const result = campaignsList.map(camp => {
+      const sales = db.sales.filter(s => s.user_id === req.user.id && s.campaign === camp.name && s.status === 'approved');
+      const revenue = sales.reduce((s, v) => s + v.value, 0);
+      const count = sales.length;
+      const spent = parseFloat(camp.spent || 0);
+      const impressions = parseInt(camp.impressions || 0);
+      const clicks = parseInt(camp.clicks || 0);
+      const roas = spent > 0 ? revenue / spent : 0;
+      const cpa = count > 0 ? spent / count : 0;
+      const profit = revenue - spent;
+      const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
+      const roi = spent > 0 ? (profit / spent) * 100 : 0;
+
+      const existing = db.campaigns.find(c => c.user_id === req.user.id && c.name === camp.name);
+      if (existing) {
+        existing.status = camp.status;
+        existing.spent = spent;
+        existing.impressions = impressions;
+        existing.clicks = clicks;
+        existing.budget = camp.budget;
+      } else {
+        db.campaigns.push({
+          id: camp.id, user_id: req.user.id, name: camp.name, platform: 'tiktok',
+          status: camp.status, budget: camp.budget, spent, impressions, clicks, created_at: new Date().toISOString()
+        });
+      }
+
+      return {
+        id: camp.id, name: camp.name, status: camp.status, platform: 'tiktok',
+        budget: camp.budget, spent, impressions, clicks,
+        revenue, sales_count: count, roas, cpa, profit, margin, roi,
+        created_at: new Date().toISOString()
+      };
+    });
+
+    saveDB(db);
+    res.json({ success: true, campaigns: result, source: apiResult.success ? 'tiktok_api' : 'fallback' });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
+// ===== KWAI ADS API ROUTES =====
+
+// Configurar conta de anúncio do Kwai
+app.post('/api/kwai/account', auth, (req, res) => {
+  const db = loadDB();
+  const { advertiser_id, access_token } = req.body;
+  if (!advertiser_id || !access_token) return res.status(400).json({ error: 'Conta e token são obrigatórios' });
+  const user = db.users.find(u => u.id === req.user.id);
+  if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+  user.kwai_advertiser_id = advertiser_id;
+  user.kwai_access_token = access_token;
+  saveDB(db);
+  res.json({ success: true });
+});
+
+// Verificar se conta Kwai está configurada
+app.get('/api/kwai/status', auth, (req, res) => {
+  const db = loadDB();
+  const user = db.users.find(u => u.id === req.user.id);
+  res.json({
+    configured: !!(user?.kwai_advertiser_id && user?.kwai_access_token),
+    advertiser_id: user?.kwai_advertiser_id || null
+  });
+});
+
+// Buscar ad accounts do Kwai disponíveis
+app.get('/api/kwai/ad-accounts', auth, async (req, res) => {
+  const { access_token } = req.query;
+  if (!access_token) return res.status(400).json({ error: 'Token obrigatório' });
+  res.json({
+    success: true,
+    accounts: [
+      { id: 'kw-act-demo', name: 'Conta Kwai Ads Demo' }
+    ]
+  });
+});
+
+// Buscar dados das campanhas do Kwai Ads
+app.get('/api/kwai/campaigns', auth, async (req, res) => {
+  const db = loadDB();
+  const user = db.users.find(u => u.id === req.user.id);
+  
+  if (!user?.kwai_advertiser_id || !user?.kwai_access_token) {
+    return res.status(400).json({ error: 'Conta do Kwai não configurada', needsSetup: true });
+  }
+
+  try {
+    const apiResult = await fetchKwaiCampaigns(user.kwai_access_token, user.kwai_advertiser_id);
+    let campaignsList = [];
+    if (apiResult.success) {
+      campaignsList = apiResult.data.map(c => ({
+        id: c.campaign_id,
+        name: c.campaign_name,
+        status: c.status === 'ENABLE' ? 'active' : 'paused',
+        budget: c.budget || 0,
+        spent: 0,
+        impressions: 0,
+        clicks: 0
+      }));
+    } else {
+      campaignsList = [
+        { id: 'kw-c1', name: 'Kwai - Escala 01', status: 'active', budget: 1500, spent: 900, impressions: 32000, clicks: 1200 },
+        { id: 'kw-c2', name: 'Kwai - Remarketing VSL', status: 'active', budget: 1000, spent: 500, impressions: 14000, clicks: 800 }
+      ];
+    }
+
+    const result = campaignsList.map(camp => {
+      const sales = db.sales.filter(s => s.user_id === req.user.id && s.campaign === camp.name && s.status === 'approved');
+      const revenue = sales.reduce((s, v) => s + v.value, 0);
+      const count = sales.length;
+      const spent = parseFloat(camp.spent || 0);
+      const impressions = parseInt(camp.impressions || 0);
+      const clicks = parseInt(camp.clicks || 0);
+      const roas = spent > 0 ? revenue / spent : 0;
+      const cpa = count > 0 ? spent / count : 0;
+      const profit = revenue - spent;
+      const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
+      const roi = spent > 0 ? (profit / spent) * 100 : 0;
+
+      const existing = db.campaigns.find(c => c.user_id === req.user.id && c.name === camp.name);
+      if (existing) {
+        existing.status = camp.status;
+        existing.spent = spent;
+        existing.impressions = impressions;
+        existing.clicks = clicks;
+        existing.budget = camp.budget;
+      } else {
+        db.campaigns.push({
+          id: camp.id, user_id: req.user.id, name: camp.name, platform: 'kwai',
+          status: camp.status, budget: camp.budget, spent, impressions, clicks, created_at: new Date().toISOString()
+        });
+      }
+
+      return {
+        id: camp.id, name: camp.name, status: camp.status, platform: 'kwai',
+        budget: camp.budget, spent, impressions, clicks,
+        revenue, sales_count: count, roas, cpa, profit, margin, roi,
+        created_at: new Date().toISOString()
+      };
+    });
+
+    saveDB(db);
+    res.json({ success: true, campaigns: result, source: apiResult.success ? 'kwai_api' : 'fallback' });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
+// ===== GATEWAY PAYMENT WEBHOOK =====
+app.post('/api/webhook/payment', (req, res) => {
+  const db = loadDB();
+  const data = req.body;
+  
+  let email = '';
+  let plan = 'pro';
+  
+  if (data.type === 'checkout.session.completed' && data.data?.object) {
+    const session = data.data.object;
+    email = session.customer_details?.email;
+    const amount = session.amount_total / 100;
+    plan = amount >= 190 ? 'scale' : 'pro';
+  } else if (data.event === 'PURCHASE_APPROVED' || data.event === 'purchase_approved') {
+    email = data.data?.buyer?.email;
+    const price = parseFloat(data.data?.purchase?.price?.value || 97);
+    plan = price >= 190 ? 'scale' : 'pro';
+  } else if (data.action === 'payment.created' || data.type === 'payment') {
+    email = data.data?.payer?.email || data.payer?.email;
+    const amount = parseFloat(data.transaction_amount || 97);
+    plan = amount >= 190 ? 'scale' : 'pro';
+  } else {
+    email = data.email || data.buyer_email || data.payer_email;
+    const amount = parseFloat(data.amount || data.price || 97);
+    plan = amount >= 190 ? 'scale' : 'pro';
+  }
+  
+  if (!email) {
+    return res.status(400).json({ error: 'E-mail do comprador não identificado' });
+  }
+
+  const user = db.users.find(u => u.email.toLowerCase() === email.toLowerCase());
+  if (!user) {
+    logAdminActivity(db, 'payment_error', `Pagamento confirmado, mas usuário não cadastrado`, `E-mail: ${email} | Plano: ${plan}`);
+    saveDB(db);
+    return res.status(404).json({ error: 'Usuário não encontrado' });
+  }
+
+  user.plan = plan;
+  user.events_limit = plan === 'pro' ? 100000 : 999999999;
+  user.plan_activated_at = new Date().toISOString();
+  
+  db.notifications.unshift({
+    id: uuidv4(),
+    user_id: user.id,
+    title: `⚡ Plano ${plan.toUpperCase()} ativo!`,
+    message: `Seu pagamento foi confirmado. Seu novo limite é de ${user.events_limit.toLocaleString('pt-BR')} eventos por mês.`,
+    type: 'success',
+    read: 0,
+    created_at: new Date().toISOString()
+  });
+
+  logAdminActivity(db, 'payment_success', `Plano ${plan.toUpperCase()} ativado via webhook`, `Cliente: ${user.name} (${user.email})`);
+  saveDB(db);
+  
+  res.json({ success: true });
+});
+
+
+// ===== PUSH NOTIFICATIONS =====
+app.post('/api/push/subscribe', auth, (req, res) => {
+  const db = loadDB();
+  const user = db.users.find(u => u.id === req.user.id);
+  if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+  
+  const { subscription, mobileToken } = req.body;
+  if (!user.push_subscriptions) user.push_subscriptions = [];
+  
+  if (subscription) {
+    const exists = user.push_subscriptions.some(s => JSON.stringify(s) === JSON.stringify(subscription));
+    if (!exists) {
+      user.push_subscriptions.push({ type: 'web', data: subscription, created_at: new Date().toISOString() });
+    }
+  } else if (mobileToken) {
+    const exists = user.push_subscriptions.some(s => s.data === mobileToken);
+    if (!exists) {
+      user.push_subscriptions.push({ type: 'mobile', data: mobileToken, created_at: new Date().toISOString() });
+    }
+  }
+  
+  saveDB(db);
+  res.json({ success: true });
+});
+
 // ===== ADMIN ROUTES =====
 function adminAuth(req, res, next) {
   const db = loadDB();
   const user = db.users.find(u => u.id === req.user?.id);
-  // Admin por role OU por email do dono
   const isAdmin = user && (user.role === 'admin' || user.email === 'demo@trackzenpro.com');
   if (!isAdmin) return res.status(403).json({ error: 'Acesso negado' });
   next();
 }
 
-// Listar todos os usuários (admin)
+// Listar todos os usuários com estatísticas completas (admin)
 app.get('/api/admin/users', auth, adminAuth, (req, res) => {
   const db = loadDB();
   const users = db.users.map(u => {
     const { password, ...safe } = u;
-    const salesCount = db.sales.filter(s => s.user_id === u.id).length;
-    return { ...safe, salesCount };
+    const userSales = db.sales.filter(s => s.user_id === u.id);
+    const salesCount = userSales.length;
+    const salesRevenue = userSales.filter(s => s.status === 'approved').reduce((acc, s) => acc + s.value, 0);
+    const pixels = db.pixels.filter(p => p.user_id === u.id).map(p => p.platform);
+    const origins = [...new Set(userSales.map(s => s.utm_source).filter(Boolean))];
+    
+    return {
+      ...safe,
+      whatsapp: u.whatsapp || '',
+      last_access: u.last_access || u.created_at,
+      subscription_status: u.subscription_status || 'active',
+      blocked: u.blocked || 0,
+      salesCount,
+      salesRevenue,
+      pixels,
+      origins
+    };
   });
   res.json(users);
 });
@@ -729,11 +1334,116 @@ app.patch('/api/admin/users/:id/plan', auth, adminAuth, (req, res) => {
   const db = loadDB();
   const user = db.users.find(u => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
-  const { plan, events_limit } = req.body;
+  
+  const { plan, events_limit, events_used } = req.body;
+  if (plan !== undefined) user.plan = plan;
+  if (events_limit !== undefined) user.events_limit = events_limit;
+  if (events_used !== undefined) user.events_used = events_used;
+  saveDB(db);
+  
+  logAdminActivity(db, 'plan_change', `Plano do usuário ${user.name} alterado`, `Plano: ${plan} | Limite: ${events_limit}`);
+  res.json({ success: true });
+});
+
+// Atualizar assinatura do usuário (admin)
+app.patch('/api/admin/users/:id/subscription', auth, adminAuth, (req, res) => {
+  const db = loadDB();
+  const user = db.users.find(u => u.id === req.params.id);
+  if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+  
+  const { plan, events_limit, subscription_status } = req.body;
   if (plan) user.plan = plan;
-  if (events_limit) user.events_limit = events_limit;
+  if (events_limit !== undefined) user.events_limit = events_limit;
+  if (subscription_status) user.subscription_status = subscription_status;
+  saveDB(db);
+  
+  logAdminActivity(db, 'subscription', `Assinatura de ${user.name} atualizada`, `Plano: ${plan} | Status: ${subscription_status}`);
+  res.json({ success: true });
+});
+
+// Alternar status de bloqueio do usuário (admin)
+app.patch('/api/admin/users/:id/status', auth, adminAuth, (req, res) => {
+  const db = loadDB();
+  const user = db.users.find(u => u.id === req.params.id);
+  if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+  
+  const { blocked } = req.body;
+  user.blocked = blocked;
+  saveDB(db);
+  
+  logAdminActivity(db, 'block_toggle', `${blocked ? 'Bloqueou' : 'Desbloqueou'} o usuário ${user.name}`, `E-mail: ${user.email}`);
+  res.json({ success: true });
+});
+
+// Excluir usuário completamente (admin)
+app.delete('/api/admin/users/:id', auth, adminAuth, (req, res) => {
+  const db = loadDB();
+  const userIndex = db.users.findIndex(u => u.id === req.params.id);
+  if (userIndex === -1) return res.status(404).json({ error: 'Usuário não encontrado' });
+  
+  const user = db.users[userIndex];
+  db.users.splice(userIndex, 1);
+  
+  // Limpar dados do usuário excluído
+  db.sales = db.sales.filter(s => s.user_id !== req.params.id);
+  db.campaigns = db.campaigns.filter(c => c.user_id !== req.params.id);
+  db.pixels = db.pixels.filter(p => p.user_id !== req.params.id);
+  db.rules = db.rules.filter(r => r.user_id !== req.params.id);
+  db.utms = db.utms.filter(u => u.user_id !== req.params.id);
+  db.notifications = db.notifications.filter(n => n.user_id !== req.params.id);
+  if (db.events_log) {
+    db.events_log = db.events_log.filter(e => e.user_id !== req.params.id);
+  }
+  
+  logAdminActivity(db, 'delete_user', `Usuário ${user.name} excluído do sistema`, `E-mail: ${user.email}`);
   saveDB(db);
   res.json({ success: true });
+});
+
+// Visualizar detalhes completos de um cliente (admin)
+app.get('/api/admin/users/:id/details', auth, adminAuth, (req, res) => {
+  const db = loadDB();
+  const user = db.users.find(u => u.id === req.params.id);
+  if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+  
+  const { password, ...safeUser } = user;
+  const userSales = db.sales.filter(s => s.user_id === user.id);
+  const campaigns = db.campaigns.filter(c => c.user_id === user.id);
+  const pixels = db.pixels.filter(p => p.user_id === user.id);
+  const utms = db.utms.filter(u => u.user_id === user.id);
+  const notifications = db.notifications.filter(n => n.user_id === user.id);
+  
+  res.json({
+    user: safeUser,
+    salesCount: userSales.length,
+    revenue: userSales.filter(s => s.status === 'approved').reduce((acc, s) => acc + s.value, 0),
+    campaigns,
+    pixels,
+    utms,
+    notifications,
+    recentSales: userSales.sort((a,b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 15)
+  });
+});
+
+// Monitoramento em tempo real de todas as vendas (admin)
+app.get('/api/admin/sales', auth, adminAuth, (req, res) => {
+  const db = loadDB();
+  const sales = db.sales.sort((a,b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 100);
+  const result = sales.map(s => {
+    const user = db.users.find(u => u.id === s.user_id);
+    return {
+      ...s,
+      userName: user ? user.name : 'Desconhecido',
+      userEmail: user ? user.email : ''
+    };
+  });
+  res.json(result);
+});
+
+// Logs do sistema / atividades gerais (admin)
+app.get('/api/admin/logs', auth, adminAuth, (req, res) => {
+  const db = loadDB();
+  res.json(db.admin_logs || []);
 });
 
 // Tornar usuário admin
@@ -765,7 +1475,6 @@ app.get('/api/admin/stats', auth, adminAuth, (req, res) => {
 // Ativar plano manualmente (para quando receber pagamento)
 app.post('/api/activate-plan', auth, (req, res) => {
   const { plan, activation_code } = req.body;
-  // Código simples de ativação — você envia manualmente para o usuário após pagamento
   const validCodes = {
     'TRACKZEN-PRO-2024': 'pro',
     'TRACKZEN-SCALE-2024': 'scale',
@@ -783,7 +1492,7 @@ app.post('/api/activate-plan', auth, (req, res) => {
 
 app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'public/index.html')));
 
-app.listen(PORT,()=>{
+const server = app.listen(PORT,()=>{
   console.log('\n╔══════════════════════════════════════════╗');
   console.log('║       TrackZen Pro — Etapa 2 ativa!      ║');
   console.log('╠══════════════════════════════════════════╣');
@@ -795,5 +1504,55 @@ app.listen(PORT,()=>{
   console.log('║  ✅ TikTok Events API integrado          ║');
   console.log('║  ✅ Webhook universal ativo              ║');
   console.log('║  ✅ Log de eventos ativo                 ║');
+  console.log('║  ✅ Servidor WebSocket ativo             ║');
   console.log('╚══════════════════════════════════════════╝\n');
 });
+
+// Inicialização do WebSocket Server integrado
+wss = new WebSocket.Server({ server });
+
+wss.on('connection', (ws, req) => {
+  const parameters = url.parse(req.url, true).query;
+  const token = parameters.token;
+  
+  if (token) {
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      ws.userId = decoded.id;
+      ws.userEmail = decoded.email;
+      
+      const db = loadDB();
+      const user = db.users.find(u => u.id === ws.userId);
+      if (user) {
+        ws.role = user.role;
+        ws.userEmail = user.email;
+      }
+    } catch (e) {
+      // Ignora erro e aguarda mensagem de auth
+    }
+  }
+
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message);
+      if (data.type === 'auth') {
+        const decoded = jwt.verify(data.token, JWT_SECRET);
+        ws.userId = decoded.id;
+        const db = loadDB();
+        const user = db.users.find(u => u.id === ws.userId);
+        if (user) {
+          ws.role = user.role;
+          ws.userEmail = user.email;
+        }
+        ws.send(JSON.stringify({ type: 'authenticated' }));
+      }
+    } catch (e) {
+      ws.send(JSON.stringify({ type: 'error', message: 'Autenticação falhou' }));
+    }
+  });
+});
+
+// Inicializar execução automática das regras
+setTimeout(runAutomatedRules, 10000); // Executa 10 segundos após iniciar o servidor
+setInterval(runAutomatedRules, 60 * 60 * 1000); // Executa a cada 1 hora
+

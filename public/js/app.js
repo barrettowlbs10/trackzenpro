@@ -23,10 +23,11 @@ async function doLogin() {
 async function doRegister() {
   const name = document.getElementById('reg-name').value;
   const email = document.getElementById('reg-email').value;
+  const whatsapp = document.getElementById('reg-whatsapp').value;
   const password = document.getElementById('reg-password').value;
   const err = document.getElementById('reg-error');
   try {
-    const r = await fetch(`${API}/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, email, password }) });
+    const r = await fetch(`${API}/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, email, password, whatsapp }) });
     const d = await r.json();
     if (!r.ok) { err.textContent = d.error; err.style.display = 'block'; return; }
     TOKEN = d.token; USER = d.user;
@@ -60,6 +61,7 @@ function startApp() {
   loadSummary('today');
   loadUserInfo();
   checkAdminAccess();
+  setupWebSocket();
   setTimeout(requestPushPermission, 2000);
 }
 
@@ -200,18 +202,36 @@ async function loadPlatform(platform) {
   try {
     let camps;
 
-    // Tentar puxar dados reais do Meta se for meta
+    // Tentar puxar dados reais das APIs
     if (platform === 'meta') {
       const realData = await loadMetaRealData();
       if (realData && realData.length > 0) {
         camps = realData;
-        // Mostrar badge de dados reais
         const badge = document.getElementById('meta-realdata-badge');
         if (badge) badge.style.display = 'inline';
       } else {
         camps = await fetch(`${API}/campaigns?platform=${platform}`, { headers: headers() }).then(r => r.json());
-        // Mostrar card de configuração se não configurado
         showMetaSetupIfNeeded();
+      }
+    } else if (platform === 'tiktok') {
+      const realData = await loadTikTokRealData();
+      if (realData && realData.length > 0) {
+        camps = realData;
+        const badge = document.getElementById('tiktok-realdata-badge');
+        if (badge) badge.style.display = 'inline';
+      } else {
+        camps = await fetch(`${API}/campaigns?platform=${platform}`, { headers: headers() }).then(r => r.json());
+        showTikTokSetupIfNeeded();
+      }
+    } else if (platform === 'kwai') {
+      const realData = await loadKwaiRealData();
+      if (realData && realData.length > 0) {
+        camps = realData;
+        const badge = document.getElementById('kwai-realdata-badge');
+        if (badge) badge.style.display = 'inline';
+      } else {
+        camps = await fetch(`${API}/campaigns?platform=${platform}`, { headers: headers() }).then(r => r.json());
+        showKwaiSetupIfNeeded();
       }
     } else {
       camps = await fetch(`${API}/campaigns?platform=${platform}`, { headers: headers() }).then(r => r.json());
@@ -541,7 +561,35 @@ async function loadNotifications() {
           </div>
         </div>
       </div>`).join('') || '<div style="color:#4a5568;font-size:12px;padding:12px 0">Nenhuma notificação</div>';
+
+    // Load user Telegram settings
+    const user = await fetch(`${API}/user`, { headers: headers() }).then(r => r.json());
+    if (user) {
+      document.getElementById('telegram-token-input').value = user.telegram_bot_token || '';
+      document.getElementById('telegram-chat-id-input').value = user.telegram_chat_id || '';
+    }
   } catch (e) { console.error('Erro notifs:', e); }
+}
+
+async function saveTelegramSettings() {
+  const token = document.getElementById('telegram-token-input').value;
+  const chat_id = document.getElementById('telegram-chat-id-input').value;
+  try {
+    const r = await fetch(`${API}/user`, {
+      method: 'PATCH',
+      headers: headers(),
+      body: JSON.stringify({ telegram_bot_token: token, telegram_chat_id: chat_id })
+    });
+    const d = await r.json();
+    if (d.success) {
+      alert('✅ Configurações do Telegram salvas com sucesso!');
+    } else {
+      alert('Erro ao salvar configurações do Telegram.');
+    }
+  } catch (e) {
+    console.error('Erro ao salvar Telegram:', e);
+    alert('Erro ao salvar configurações do Telegram.');
+  }
 }
 
 async function markAllRead() {
@@ -715,7 +763,168 @@ function showMetaSetupIfNeeded() {
   if (card) card.style.display = metaConfigured ? 'none' : 'block';
 }
 
+// ===== TIKTOK ADS API FRONTEND =====
+let tiktokConfigured = false;
+
+async function checkTikTokStatus() {
+  try {
+    const r = await fetch(`${API}/tiktok/status`, { headers: headers() });
+    const d = await r.json();
+    tiktokConfigured = d.configured;
+    return d;
+  } catch { return { configured: false }; }
+}
+
+async function loadTikTokAdAccounts() {
+  const token = document.getElementById('tiktok-token-input')?.value;
+  if (!token) { alert('Cole o token de acesso primeiro!'); return; }
+  const btn = document.getElementById('btn-load-tiktok-accounts');
+  if (btn) { btn.textContent = 'Carregando...'; btn.disabled = true; }
+  try {
+    const r = await fetch(`${API}/tiktok/ad-accounts?access_token=${encodeURIComponent(token)}`, { headers: headers() });
+    const d = await r.json();
+    if (!d.success) { alert('Erro: ' + d.error); return; }
+    const sel = document.getElementById('tiktok-account-select');
+    if (sel) {
+      sel.innerHTML = '<option value="">Selecione a conta...</option>' +
+        d.accounts.map(a => `<option value="${a.id}">${a.name} (${a.id})</option>`).join('');
+      sel.style.display = 'block';
+      document.getElementById('btn-save-tiktok').style.display = 'inline-flex';
+    }
+  } catch(e) { alert('Erro ao buscar contas: ' + e.message); }
+  finally { if (btn) { btn.textContent = 'Buscar contas'; btn.disabled = false; } }
+}
+
+async function saveTikTokAccount() {
+  const token = document.getElementById('tiktok-token-input')?.value;
+  const account = document.getElementById('tiktok-account-select')?.value;
+  if (!token || !account) { alert('Selecione uma conta!'); return; }
+  try {
+    const r = await fetch(`${API}/tiktok/account`, { method:'POST', headers:headers(), body:JSON.stringify({ advertiser_id: account, access_token: token }) });
+    const d = await r.json();
+    if (d.success) {
+      alert('✅ Conta TikTok configurada! Clique em Atualizar para puxar os dados.');
+      tiktokConfigured = true;
+      document.getElementById('tiktok-setup-card')?.style && (document.getElementById('tiktok-setup-card').style.display = 'none');
+      loadPlatform('tiktok');
+    }
+  } catch(e) { alert('Erro: ' + e.message); }
+}
+
+async function loadTikTokRealData() {
+  try {
+    const r = await fetch(`${API}/tiktok/campaigns`, { headers: headers() });
+    const d = await r.json();
+    if (d.needsSetup) return null;
+    if (!d.success) { console.log('TikTok API erro:', d.error); return null; }
+    return d.campaigns;
+  } catch { return null; }
+}
+
+function showTikTokSetupIfNeeded() {
+  const card = document.getElementById('tiktok-setup-card');
+  if (card) card.style.display = tiktokConfigured ? 'none' : 'block';
+}
+
+// ===== KWAI ADS API FRONTEND =====
+let kwaiConfigured = false;
+
+async function checkKwaiStatus() {
+  try {
+    const r = await fetch(`${API}/kwai/status`, { headers: headers() });
+    const d = await r.json();
+    kwaiConfigured = d.configured;
+    return d;
+  } catch { return { configured: false }; }
+}
+
+async function loadKwaiAdAccounts() {
+  const token = document.getElementById('kwai-token-input')?.value;
+  if (!token) { alert('Cole o token de acesso primeiro!'); return; }
+  const btn = document.getElementById('btn-load-kwai-accounts');
+  if (btn) { btn.textContent = 'Carregando...'; btn.disabled = true; }
+  try {
+    const r = await fetch(`${API}/kwai/ad-accounts?access_token=${encodeURIComponent(token)}`, { headers: headers() });
+    const d = await r.json();
+    if (!d.success) { alert('Erro: ' + d.error); return; }
+    const sel = document.getElementById('kwai-account-select');
+    if (sel) {
+      sel.innerHTML = '<option value="">Selecione a conta...</option>' +
+        d.accounts.map(a => `<option value="${a.id}">${a.name} (${a.id})</option>`).join('');
+      sel.style.display = 'block';
+      document.getElementById('btn-save-kwai').style.display = 'inline-flex';
+    }
+  } catch(e) { alert('Erro ao buscar contas: ' + e.message); }
+  finally { if (btn) { btn.textContent = 'Buscar contas'; btn.disabled = false; } }
+}
+
+async function saveKwaiAccount() {
+  const token = document.getElementById('kwai-token-input')?.value;
+  const account = document.getElementById('kwai-account-select')?.value;
+  if (!token || !account) { alert('Selecione uma conta!'); return; }
+  try {
+    const r = await fetch(`${API}/kwai/account`, { method:'POST', headers:headers(), body:JSON.stringify({ advertiser_id: account, access_token: token }) });
+    const d = await r.json();
+    if (d.success) {
+      alert('✅ Conta Kwai configurada! Clique em Atualizar para puxar os dados.');
+      kwaiConfigured = true;
+      document.getElementById('kwai-setup-card')?.style && (document.getElementById('kwai-setup-card').style.display = 'none');
+      loadPlatform('kwai');
+    }
+  } catch(e) { alert('Erro: ' + e.message); }
+}
+
+async function loadKwaiRealData() {
+  try {
+    const r = await fetch(`${API}/kwai/campaigns`, { headers: headers() });
+    const d = await r.json();
+    if (d.needsSetup) return null;
+    if (!d.success) { console.log('Kwai API erro:', d.error); return null; }
+    return d.campaigns;
+  } catch { return null; }
+}
+
+function showKwaiSetupIfNeeded() {
+  const card = document.getElementById('kwai-setup-card');
+  if (card) card.style.display = kwaiConfigured ? 'none' : 'block';
+}
+
+// ===== USER INFO & INTEGRATION STATUS =====
+async function loadUserInfo() {
+  try {
+    const user = await fetch(`${API}/user`, { headers: headers() }).then(r => r.json());
+    if (user) {
+      document.getElementById('sidebar-plan').textContent = user.plan.charAt(0).toUpperCase()+user.plan.slice(1);
+      const pct = Math.round((user.events_used / user.events_limit) * 100) || 0;
+      document.getElementById('sidebar-events').textContent = `${user.events_used.toLocaleString('pt-BR')} / ${user.events_limit.toLocaleString('pt-BR')} eventos`;
+      document.getElementById('sidebar-events-fill').style.width = pct + '%';
+    }
+    // Check integration statuses
+    const meta = await checkMetaStatus();
+    updateIntegrationStatus('meta', meta.configured);
+    const tiktok = await checkTikTokStatus();
+    updateIntegrationStatus('tiktok', tiktok.configured);
+    const kwai = await checkKwaiStatus();
+    updateIntegrationStatus('kwai', kwai.configured);
+  } catch (e) { console.error('Erro loadUserInfo:', e); }
+}
+
+function updateIntegrationStatus(platform, connected) {
+  const el = document.getElementById(`status-integ-${platform}`);
+  if (el) {
+    if (connected) {
+      el.textContent = 'Conectado';
+      el.className = 'integ-status status-ok';
+    } else {
+      el.textContent = 'Não conectado';
+      el.className = 'integ-status status-warn';
+    }
+  }
+}
+
 // ===== ADMIN =====
+let adminUsersCache = [];
+
 async function loadAdmin() {
   try {
     const [statsR, usersR] = await Promise.all([
@@ -727,6 +936,8 @@ async function loadAdmin() {
     
     const stats = await statsR.json();
     const users = await usersR.json();
+    
+    adminUsersCache = users;
 
     document.getElementById('admin-stats').innerHTML = [
       { lbl: 'Total usuários', val: stats.totalUsers, ico: 'ti-users', bg: '#1e3a5f', ic: '#60a5fa' },
@@ -739,10 +950,54 @@ async function loadAdmin() {
         <div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div></div>
       </div>`).join('');
 
-    document.getElementById('tbody-admin-users').innerHTML = users.map(u => `
+    renderAdminUsers(users);
+
+  } catch(e) { console.error('Erro admin:', e); }
+}
+
+function switchAdminTab(tab, el) {
+  document.querySelectorAll('#tabs-admin .tab').forEach(t => t.classList.remove('active'));
+  if (el) el.classList.add('active');
+  
+  document.querySelectorAll('.admin-tab-content').forEach(c => c.style.display = 'none');
+  const target = document.getElementById('admin-tab-' + tab);
+  if (target) target.style.display = 'block';
+  
+  if (tab === 'users') loadAdmin();
+  if (tab === 'sales') loadAdminSales();
+  if (tab === 'logs') loadAdminLogs();
+  if (tab === 'stats') loadAdminStatsCharts();
+}
+
+function filterAdminUsers() {
+  const query = document.getElementById('search-admin-users').value.toLowerCase();
+  const planFilter = document.getElementById('filter-admin-plan').value;
+  
+  const filtered = adminUsersCache.filter(u => {
+    const matchesQuery = u.name.toLowerCase().includes(query) || u.email.toLowerCase().includes(query);
+    const matchesPlan = !planFilter || u.plan === planFilter;
+    return matchesQuery && matchesPlan;
+  });
+  
+  renderAdminUsers(filtered);
+}
+
+function renderAdminUsers(users) {
+  document.getElementById('tbody-admin-users').innerHTML = users.map(u => {
+    const lastAccessStr = u.last_access ? new Date(u.last_access).toLocaleString('pt-BR') : 'Sem registros';
+    const statusAssinatura = u.subscription_status || 'active';
+    const isBlocked = u.blocked === 1;
+    
+    return `
       <tr>
-        <td><div class="cn">${u.name}</div></td>
+        <td>
+          <div class="cn">${u.name}</div>
+          <div class="cd">ID: ${u.id.substring(0,8)}</div>
+        </td>
         <td style="color:#6b7280">${u.email}</td>
+        <td>${u.whatsapp || 'N/A'}</td>
+        <td style="color:#6b7280">${new Date(u.created_at).toLocaleDateString('pt-BR')}</td>
+        <td style="color:#6b7280">${lastAccessStr}</td>
         <td>
           <select onchange="updateUserPlan('${u.id}', this.value)" style="background:#1a1e2e;border:1px solid #2d3348;border-radius:5px;color:#e2e8f0;padding:3px 6px;font-size:10px">
             <option value="free" ${u.plan==='free'?'selected':''}>Free</option>
@@ -750,17 +1005,38 @@ async function loadAdmin() {
             <option value="scale" ${u.plan==='scale'?'selected':''}>Scale</option>
           </select>
         </td>
-        <td>${(u.events_used||0).toLocaleString('pt-BR')} / ${(u.events_limit||1000).toLocaleString('pt-BR')}</td>
-        <td>${u.salesCount || 0}</td>
-        <td style="color:#6b7280">${new Date(u.created_at).toLocaleDateString('pt-BR')}</td>
         <td>
-          <button onclick="resetUserEvents('${u.id}')" class="btn-upd" style="font-size:10px;padding:3px 8px">
-            <i class="ti ti-refresh" style="font-size:11px"></i> Reset eventos
-          </button>
+          <select onchange="updateUserSubscriptionStatus('${u.id}', this.value)" style="background:#1a1e2e;border:1px solid #2d3348;border-radius:5px;color:${statusAssinatura === 'active' ? '#4ade80' : statusAssinatura === 'pending' ? '#fb923c' : '#f87171'};padding:3px 6px;font-size:10px">
+            <option value="active" ${statusAssinatura === 'active' ? 'selected' : ''}>Ativa</option>
+            <option value="pending" ${statusAssinatura === 'pending' ? 'selected' : ''}>Pendente</option>
+            <option value="canceled" ${statusAssinatura === 'canceled' ? 'selected' : ''}>Cancelada</option>
+          </select>
         </td>
-      </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;padding:24px;color:#4a5568">Nenhum usuário</td></tr>';
+        <td>${u.salesCount || 0}</td>
+        <td class="rg">${R(u.salesRevenue || 0)}</td>
+        <td>
+          <div style="display:flex;gap:4px">
+            <button onclick="viewUserDetails('${u.id}')" class="btn-upd" style="font-size:10px;padding:3px 8px" title="Ver detalhes completos"><i class="ti ti-eye"></i></button>
+            <button onclick="toggleBlockUser('${u.id}', ${isBlocked ? 0 : 1})" class="btn-upd" style="font-size:10px;padding:3px 8px;color:${isBlocked ? '#4ade80' : '#f87171'}" title="${isBlocked ? 'Desbloquear acesso' : 'Bloquear acesso'}"><i class="ti ti-${isBlocked ? 'lock-open' : 'lock'}"></i></button>
+            <button onclick="deleteUser('${u.id}')" style="background:none;border:1px solid #3b1212;border-radius:6px;color:#ef4444;padding:3px 7px;cursor:pointer;font-size:10px" title="Excluir cliente"><i class="ti ti-trash"></i></button>
+          </div>
+        </td>
+      </tr>`;
+  }).join('') || '<tr><td colspan="10" style="text-align:center;padding:24px;color:#4a5568">Nenhum cliente cadastrado</td></tr>';
+}
 
-  } catch(e) { console.error('Erro admin:', e); }
+async function toggleBlockUser(userId, blocked) {
+  const r = await fetch(`${API}/admin/users/${userId}/status`, {
+    method: 'PATCH',
+    headers: headers(),
+    body: JSON.stringify({ blocked })
+  });
+  if (r.ok) {
+    alert(`✅ Usuário ${blocked ? 'bloqueado' : 'desbloqueado'} com sucesso!`);
+    loadAdmin();
+  } else {
+    alert('Erro ao alterar status de acesso do usuário.');
+  }
 }
 
 async function updateUserPlan(userId, plan) {
@@ -772,13 +1048,186 @@ async function updateUserPlan(userId, plan) {
   alert(`✅ Plano atualizado para ${plan}!`);
 }
 
-async function resetUserEvents(userId) {
-  const db_resp = await fetch(`${API}/admin/users/${userId}/plan`, {
-    method: 'PATCH', headers: headers(),
-    body: JSON.stringify({ events_used: 0 })
+async function updateUserSubscriptionStatus(userId, status) {
+  const r = await fetch(`${API}/admin/users/${userId}/subscription`, {
+    method: 'PATCH',
+    headers: headers(),
+    body: JSON.stringify({ subscription_status: status })
   });
-  alert('✅ Eventos resetados!');
-  loadAdmin();
+  if (r.ok) {
+    alert('✅ Status da assinatura atualizado!');
+    loadAdmin();
+  }
+}
+
+async function deleteUser(userId) {
+  if (!confirm('Tem certeza absoluta que deseja excluir este cliente do sistema? Esta ação irá remover todos os pixels, campanhas, regras e UTMs vinculados a ele, e NÃO poderá ser desfeita!')) return;
+  
+  const r = await fetch(`${API}/admin/users/${userId}`, {
+    method: 'DELETE',
+    headers: headers()
+  });
+  
+  if (r.ok) {
+    alert('✅ Cliente e todos os dados associados foram excluídos!');
+    loadAdmin();
+  } else {
+    alert('Erro ao excluir usuário.');
+  }
+}
+
+async function viewUserDetails(userId) {
+  try {
+    const r = await fetch(`${API}/admin/users/${userId}/details`, { headers: headers() });
+    if (!r.ok) { alert('Erro ao carregar detalhes.'); return; }
+    const data = await r.json();
+    
+    const u = data.user;
+    const pixelsStr = data.pixels.map(p => `<span class="badge-purple" style="margin-right:4px; margin-bottom:4px; display:inline-block;">${p.platform.toUpperCase()} (${p.pixel_id || 'sem ID'})</span>`).join('') || '<span style="color:#6b7280">Nenhum pixel integrado</span>';
+    const recentSalesStr = data.recentSales.map(s => `
+      <div class="cv-item" style="padding:6px 0">
+        <div style="font-size:11px;color:#e2e8f0">${new Date(s.created_at).toLocaleString('pt-BR')} · ${s.product}</div>
+        <div style="text-align:right">
+          <span style="color:#22c55e;font-weight:500">${R(s.value)}</span>
+          <div style="font-size:9px;color:#6b7280">${s.platform} · UA: ${s.device || 'Desktop'}</div>
+        </div>
+      </div>
+    `).join('') || '<div style="color:#6b7280;font-size:11px;padding:8px 0">Sem vendas recentes registradas</div>';
+    
+    document.getElementById('client-detail-content').innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div>
+          <div style="font-size:10px;color:#6b7280;margin-bottom:2px">Nome Completo</div>
+          <div style="font-size:12px;color:#fff;font-weight:500">${u.name}</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:#6b7280;margin-bottom:2px">Email</div>
+          <div style="font-size:12px;color:#fff">${u.email}</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:#6b7280;margin-bottom:2px">WhatsApp</div>
+          <div style="font-size:12px;color:#fff">${u.whatsapp || 'Não informado'}</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:#6b7280;margin-bottom:2px">Data de Cadastro</div>
+          <div style="font-size:12px;color:#fff">${new Date(u.created_at).toLocaleString('pt-BR')}</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:#6b7280;margin-bottom:2px">Faturamento Trackeado</div>
+          <div style="font-size:12px;color:#22c55e;font-weight:600">${R(data.revenue)}</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:#6b7280;margin-bottom:2px">Total de Vendas</div>
+          <div style="font-size:12px;color:#fff;font-weight:600">${data.salesCount} vendas</div>
+        </div>
+      </div>
+      
+      <div style="border-top:1px solid #1e2130;padding-top:12px">
+        <div style="font-weight:500;color:#e2e8f0;font-size:12px;margin-bottom:6px">Pixels Integrados</div>
+        <div>${pixelsStr}</div>
+      </div>
+      
+      <div style="border-top:1px solid #1e2130;padding-top:12px;flex:1;display:flex;flex-direction:column;min-height:0">
+        <div style="font-weight:500;color:#e2e8f0;font-size:12px;margin-bottom:6px">Vendas Recentes do Cliente</div>
+        <div style="overflow-y:auto;flex:1;padding-right:4px">${recentSalesStr}</div>
+      </div>
+    `;
+    
+    document.getElementById('modal-client-details').style.display = 'flex';
+  } catch(e) {
+    console.error(e);
+    alert('Erro ao carregar detalhes.');
+  }
+}
+
+async function loadAdminSales() {
+  try {
+    const r = await fetch(`${API}/admin/sales`, { headers: headers() });
+    if (!r.ok) return;
+    const sales = await r.json();
+    
+    document.getElementById('tbody-admin-sales').innerHTML = sales.map(s => {
+      const date = new Date(s.created_at).toLocaleString('pt-BR');
+      return `
+        <tr>
+          <td>${date}</td>
+          <td>
+            <div class="cn">${s.userName}</div>
+            <div class="cd">${s.userEmail}</div>
+          </td>
+          <td style="color:${s.platform === 'meta' ? '#60a5fa' : s.platform === 'tiktok' ? '#fb923c' : '#4ade80'}">${s.platform}</td>
+          <td>${s.product}</td>
+          <td class="rg">${R(s.value)}</td>
+          <td><span class="${s.status === 'approved' ? 'b-ok' : 'b-stop'}">${s.status === 'approved' ? 'Aprovada' : s.status}</span></td>
+          <td>
+            <div class="cn">${s.utm_campaign || 'N/A'}</div>
+            <div class="cd">source: ${s.utm_source || 'direto'} | medium: ${s.utm_medium || 'N/A'}</div>
+          </td>
+          <td>${s.device || 'Desktop'}</td>
+          <td>${s.geo || 'Brasil / São Paulo'}</td>
+        </tr>`;
+    }).join('') || '<tr><td colspan="9" style="text-align:center;padding:24px;color:#4a5568">Nenhuma venda encontrada na plataforma</td></tr>';
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+async function loadAdminLogs() {
+  try {
+    const r = await fetch(`${API}/admin/logs`, { headers: headers() });
+    if (!r.ok) return;
+    const logs = await r.json();
+    
+    document.getElementById('tbody-admin-logs').innerHTML = logs.map(l => {
+      const date = new Date(l.created_at).toLocaleString('pt-BR');
+      let badgeColor = '#7c3aed';
+      if (l.type === 'sale') badgeColor = '#22c55e';
+      if (l.type === 'block_toggle') badgeColor = '#ef4444';
+      if (l.type === 'delete_user') badgeColor = '#7f1d1d';
+      
+      return `
+        <tr>
+          <td>${date}</td>
+          <td><span style="background:${badgeColor}22;color:${badgeColor};font-size:9px;padding:2px 8px;border-radius:4px">${l.type.toUpperCase()}</span></td>
+          <td style="font-weight:500;color:#e2e8f0">${l.message}</td>
+          <td style="color:#6b7280;font-size:10px">${l.details || ''}</td>
+        </tr>`;
+    }).join('') || '<tr><td colspan="4" style="text-align:center;padding:24px;color:#4a5568">Nenhum log de atividades registrado</td></tr>';
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+async function loadAdminStatsCharts() {
+  try {
+    const r = await fetch(`${API}/admin/users`, { headers: headers() });
+    if (!r.ok) return;
+    const users = await r.json();
+    
+    const plans = { free: 0, pro: 0, scale: 0 };
+    users.forEach(u => {
+      if (plans[u.plan] !== undefined) plans[u.plan]++;
+    });
+    
+    mkChart('c-admin-plans', 'doughnut', ['Free', 'Pro', 'Scale'], [
+      { data: [plans.free, plans.pro, plans.scale], backgroundColor: ['#6b7280', '#7c3aed', '#22c55e'], borderWidth: 0 }
+    ], { cutout: '60%' });
+    
+    const registrationsByDate = {};
+    users.forEach(u => {
+      const date = new Date(u.created_at).toLocaleDateString('pt-BR');
+      registrationsByDate[date] = (registrationsByDate[date] || 0) + 1;
+    });
+    const regDates = Object.keys(registrationsByDate).sort().slice(-7);
+    const regCounts = regDates.map(d => registrationsByDate[d]);
+    
+    mkChart('c-admin-sales-trend', 'bar', regDates, [
+      { label: 'Novos Clientes', data: regCounts, backgroundColor: '#7c3aed', borderRadius: 4 }
+    ], { scales: { x: { grid: { display: false } }, y: { beginAtZero: true } } });
+    
+  } catch(e) {
+    console.error(e);
+  }
 }
 
 // Mostrar/esconder admin na sidebar baseado no papel do usuário
@@ -811,7 +1260,6 @@ async function registerPush() {
   } catch(e) { console.log('Push:', e); }
 }
 
-// Solicitar permissão assim que logar
 async function requestPushPermission() {
   try {
     if (!('Notification' in window)) return;
@@ -822,7 +1270,6 @@ async function requestPushPermission() {
   } catch(e) { console.log('Permission:', e); }
 }
 
-// Notificação de venda (chamada quando webhook recebe venda)
 function notifyNewSale(value, platform, campaign) {
   if (typeof showLocalNotification === 'function') {
     showLocalNotification(
@@ -830,5 +1277,76 @@ function notifyNewSale(value, platform, campaign) {
       `R$ ${parseFloat(value).toFixed(2)} — ${platform} · ${campaign}`,
       { url: '/' }
     );
+  }
+}
+
+// ===== WEBSOCKETS REAL-TIME =====
+let socket = null;
+function setupWebSocket() {
+  if (socket) return;
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${protocol}//${window.location.host}?token=${TOKEN}`;
+  
+  socket = new WebSocket(wsUrl);
+  
+  socket.onopen = () => {
+    console.log('Conexão WebSocket ativa!');
+  };
+  
+  socket.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.type === 'new_sale') {
+        playNotificationSound();
+        notifyNewSale(data.sale.value, data.sale.platform, data.sale.campaign);
+        
+        if (document.querySelector('[data-page="resumo"].active')) {
+          loadSummary('today');
+        }
+        
+        if (document.querySelector('[data-page="admin"].active')) {
+          const activeTab = document.querySelector('#tabs-admin .tab.active');
+          if (activeTab) {
+            const tabName = activeTab.textContent.toLowerCase();
+            if (tabName.includes('vendas')) loadAdminSales();
+            else if (tabName.includes('clientes')) loadAdmin();
+            else if (tabName.includes('logs')) loadAdminLogs();
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Erro WebSocket mensagem:', e);
+    }
+  };
+  
+  socket.onclose = () => {
+    console.log('Conexão WebSocket fechada. Reconectando...');
+    socket = null;
+    setTimeout(setupWebSocket, 5000);
+  };
+}
+
+// ===== SOUND SYNTHESIS =====
+function playNotificationSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const playTone = (freq, duration, delay) => {
+      setTimeout(() => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, ctx.currentTime);
+        gain.gain.setValueAtTime(0.15, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + duration);
+      }, delay * 1000);
+    };
+    playTone(1500, 0.15, 0);
+    playTone(1900, 0.25, 0.08);
+  } catch (e) {
+    console.log('Erro ao tocar som:', e);
   }
 }
