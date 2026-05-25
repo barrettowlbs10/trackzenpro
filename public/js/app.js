@@ -1,4 +1,6 @@
-const API = window.location.origin + '/api';
+const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+const BACKEND_URL = isLocal ? window.location.origin : 'https://trackzenpro.com';
+const API = BACKEND_URL + '/api';
 let TOKEN = localStorage.getItem('tztoken');
 let USER = JSON.parse(localStorage.getItem('tzuser') || 'null');
 let charts = {};
@@ -56,7 +58,7 @@ function startApp() {
     document.getElementById('user-name').textContent = USER.name;
     document.getElementById('user-av').textContent = USER.name.charAt(0).toUpperCase();
     const wh = document.getElementById('webhook-url');
-    if (wh) wh.textContent = `${window.location.origin}/api/webhook/${USER.id}`;
+    if (wh) wh.textContent = `${BACKEND_URL}/api/webhook/${USER.id}`;
   }
   loadSummary('today');
   loadUserInfo();
@@ -642,7 +644,7 @@ async function saveAccount() {
 function showWebhookModal(platform) {
   const names = { meta:'Meta Ads', tiktok:'TikTok Ads', google:'Google Ads', kwai:'Kwai Ads' };
   document.getElementById('modal-title').textContent = `Integração — ${names[platform]||platform}`;
-  const url = `${window.location.origin}/api/webhook/${USER?.id||'SEU_ID'}`;
+  const url = `${BACKEND_URL}/api/webhook/${USER?.id||'SEU_ID'}`;
   document.getElementById('modal-url').textContent = url;
   document.getElementById('modal-webhook').style.display = 'flex';
 }
@@ -1284,8 +1286,9 @@ function notifyNewSale(value, platform, campaign) {
 let socket = null;
 function setupWebSocket() {
   if (socket) return;
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}?token=${TOKEN}`;
+  const protocol = BACKEND_URL.startsWith('https') ? 'wss:' : 'ws:';
+  const wsHost = BACKEND_URL.replace(/^https?:\/\//, '');
+  const wsUrl = `${protocol}//${wsHost}?token=${TOKEN}`;
   
   socket = new WebSocket(wsUrl);
   
