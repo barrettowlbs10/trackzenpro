@@ -134,6 +134,63 @@ async function fireTikTokAPI(pixel, saleData) {
   } catch(e) { return { success: false, error: e.message }; }
 }
 
+
+// ===== META ADS API - PUXAR DADOS REAIS =====
+async function fetchMetaAdData(accessToken, adAccountId) {
+  try {
+    const fields = 'campaign_name,impressions,clicks,spend,cpm,cpc,ctr,reach,frequency,actions,cost_per_action_type';
+    const datePreset = 'today';
+    const url = `https://graph.facebook.com/v18.0/${adAccountId}/insights?fields=${fields}&date_preset=${datePreset}&level=campaign&access_token=${accessToken}`;
+    
+    return await new Promise((resolve) => {
+      const options = {
+        hostname: 'graph.facebook.com',
+        path: `/v18.0/${adAccountId}/insights?fields=${fields}&date_preset=${datePreset}&level=campaign&access_token=${accessToken}`,
+        method: 'GET',
+      };
+      const req = https.request(options, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.error) resolve({ success: false, error: parsed.error.message });
+            else resolve({ success: true, data: parsed.data || [] });
+          } catch { resolve({ success: false, error: 'Resposta inválida' }); }
+        });
+      });
+      req.on('error', e => resolve({ success: false, error: e.message }));
+      req.end();
+    });
+  } catch(e) { return { success: false, error: e.message }; }
+}
+
+async function fetchMetaCampaigns(accessToken, adAccountId) {
+  try {
+    const fields = 'id,name,status,budget_remaining,daily_budget,lifetime_budget,objective';
+    return await new Promise((resolve) => {
+      const options = {
+        hostname: 'graph.facebook.com',
+        path: `/v18.0/${adAccountId}/campaigns?fields=${fields}&access_token=${accessToken}`,
+        method: 'GET',
+      };
+      const req = https.request(options, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.error) resolve({ success: false, error: parsed.error.message });
+            else resolve({ success: true, data: parsed.data || [] });
+          } catch { resolve({ success: false, error: 'Resposta inválida' }); }
+        });
+      });
+      req.on('error', e => resolve({ success: false, error: e.message }));
+      req.end();
+    });
+  } catch(e) { return { success: false, error: e.message }; }
+}
+
 function hashData(data) {
   const crypto = require('crypto');
   return crypto.createHash('sha256').update(data.trim().toLowerCase()).digest('hex');
@@ -460,6 +517,138 @@ app.patch('/api/user',auth,(req,res)=>{
   if(req.body.name) user.name=req.body.name;
   if(req.body.password) user.password=bcrypt.hashSync(req.body.password,10);
   saveDB(db); res.json({success:true});
+});
+
+
+// ===== META ADS API ROUTES =====
+
+// Configurar conta de anúncio do Meta
+app.post('/api/meta/account', auth, (req, res) => {
+  const db = loadDB();
+  const { ad_account_id, access_token } = req.body;
+  if (!ad_account_id || !access_token) return res.status(400).json({ error: 'Conta e token são obrigatórios' });
+  
+  const user = db.users.find(u => u.id === req.user.id);
+  if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+  
+  user.meta_ad_account = ad_account_id.startsWith('act_') ? ad_account_id : `act_${ad_account_id}`;
+  user.meta_access_token = access_token;
+  saveDB(db);
+  res.json({ success: true });
+});
+
+// Buscar dados reais das campanhas do Meta
+app.get('/api/meta/campaigns', auth, async (req, res) => {
+  const db = loadDB();
+  const user = db.users.find(u => u.id === req.user.id);
+  
+  if (!user?.meta_ad_account || !user?.meta_access_token) {
+    return res.status(400).json({ error: 'Conta do Meta não configurada', needsSetup: true });
+  }
+
+  try {
+    // Buscar campanhas e insights em paralelo
+    const [campaignsResult, insightsResult] = await Promise.all([
+      fetchMetaCampaigns(user.meta_access_token, user.meta_ad_account),
+      fetchMetaAdData(user.meta_access_token, user.meta_ad_account)
+    ]);
+
+    if (!campaignsResult.success) return res.status(400).json({ error: campaignsResult.error });
+
+    const insightsMap = {};
+    if (insightsResult.success) {
+      insightsResult.data.forEach(item => {
+        insightsMap[item.campaign_name] = item;
+      });
+    }
+
+    // Combinar campanhas com insights e vendas do banco
+    const result = campaignsResult.data.map(camp => {
+      const insight = insightsMap[camp.name] || {};
+      const sales = db.sales.filter(s => s.user_id === req.user.id && s.campaign === camp.name && s.status === 'approved');
+      const revenue = sales.reduce((s, v) => s + v.value, 0);
+      const count = sales.length;
+      const spent = parseFloat(insight.spend || 0);
+      const impressions = parseInt(insight.impressions || 0);
+      const clicks = parseInt(insight.clicks || 0);
+      const cpm = parseFloat(insight.cpm || 0);
+      const cpc = parseFloat(insight.cpc || 0);
+      const ctr = parseFloat(insight.ctr || 0);
+      const roas = spent > 0 ? revenue / spent : 0;
+      const cpa = count > 0 ? spent / count : 0;
+      const profit = revenue - spent;
+      const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
+      const roi = spent > 0 ? (profit / spent) * 100 : 0;
+      const budget = parseFloat(camp.daily_budget || camp.lifetime_budget || 0) / 100;
+
+      // Salvar/atualizar campanha no banco
+      const existing = db.campaigns.find(c => c.user_id === req.user.id && c.name === camp.name);
+      if (existing) {
+        existing.status = camp.status === 'ACTIVE' ? 'active' : 'paused';
+        existing.spent = spent;
+        existing.impressions = impressions;
+        existing.clicks = clicks;
+        existing.budget = budget;
+      } else {
+        db.campaigns.push({
+          id: camp.id, user_id: req.user.id, name: camp.name, platform: 'meta',
+          status: camp.status === 'ACTIVE' ? 'active' : 'paused',
+          budget, spent, impressions, clicks, created_at: new Date().toISOString()
+        });
+      }
+
+      return {
+        id: camp.id, name: camp.name,
+        status: camp.status === 'ACTIVE' ? 'active' : 'paused',
+        platform: 'meta', budget, spent, impressions, clicks,
+        cpm, cpc, ctr, revenue, sales_count: count,
+        roas, cpa, profit, margin, roi,
+        created_at: new Date().toISOString()
+      };
+    });
+
+    saveDB(db);
+    res.json({ success: true, campaigns: result, source: 'meta_api' });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Verificar se conta Meta está configurada
+app.get('/api/meta/status', auth, (req, res) => {
+  const db = loadDB();
+  const user = db.users.find(u => u.id === req.user.id);
+  res.json({
+    configured: !!(user?.meta_ad_account && user?.meta_access_token),
+    ad_account: user?.meta_ad_account || null
+  });
+});
+
+// Buscar ad accounts disponíveis
+app.get('/api/meta/ad-accounts', auth, async (req, res) => {
+  const { access_token } = req.query;
+  if (!access_token) return res.status(400).json({ error: 'Token obrigatório' });
+  try {
+    const result = await new Promise((resolve) => {
+      const options = {
+        hostname: 'graph.facebook.com',
+        path: `/v18.0/me/adaccounts?fields=id,name,account_status&access_token=${access_token}`,
+        method: 'GET',
+      };
+      const req2 = https.request(options, (r) => {
+        let data = '';
+        r.on('data', chunk => data += chunk);
+        r.on('end', () => {
+          try { resolve(JSON.parse(data)); }
+          catch { resolve({ error: { message: 'Resposta inválida' } }); }
+        });
+      });
+      req2.on('error', e => resolve({ error: { message: e.message } }));
+      req2.end();
+    });
+    if (result.error) return res.status(400).json({ error: result.error.message });
+    res.json({ success: true, accounts: result.data || [] });
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'public/index.html')));

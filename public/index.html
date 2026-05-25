@@ -133,10 +133,32 @@
         <div class="kpi-row" id="kpi-meta"></div>
         <div class="tabs-bar" id="tabs-meta">
           <div class="tab active" onclick="switchTab('meta','contas',this)"><i class="ti ti-building"></i> Contas</div>
-          <div class="tab" onclick="switchTab('meta','campanhas',this)"><i class="ti ti-speakerphone"></i> Campanhas</div>
+          <div class="tab" onclick="switchTab('meta','campanhas',this)"><i class="ti ti-speakerphone"></i> Campanhas <span id="meta-realdata-badge" style="display:none;background:#14532d;color:#4ade80;font-size:9px;padding:1px 6px;border-radius:10px;margin-left:3px">Dados reais</span></div>
           <div class="tab" onclick="switchTab('meta','conjuntos',this)"><i class="ti ti-layout-grid"></i> Conjuntos</div>
           <div class="tab" onclick="switchTab('meta','anuncios',this)"><i class="ti ti-photo"></i> Anúncios</div>
         </div>
+        <!-- Card de configuração Meta API -->
+        <div id="meta-setup-card" style="display:none;background:#1a1e2e;border:1px solid #7c3aed;border-radius:9px;padding:16px;margin-bottom:14px;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+            <div style="width:32px;height:32px;background:#2e1a4f;border-radius:7px;display:flex;align-items:center;justify-content:center"><i class="ti ti-brand-facebook" style="color:#60a5fa;font-size:16px"></i></div>
+            <div>
+              <div style="font-size:13px;font-weight:500;color:#e2e8f0">Conectar Meta Ads</div>
+              <div style="font-size:11px;color:#6b7280">Cole seu token para puxar dados reais das campanhas</div>
+            </div>
+            <span style="margin-left:auto;background:#7c3aed22;color:#a78bfa;font-size:10px;padding:3px 10px;border-radius:20px">Recomendado</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:8px">
+            <input id="meta-token-input" placeholder="Cole aqui o token de acesso do Meta (Gerenciador de Anúncios → Configurações → Token)" style="background:#13151f;border:1px solid #2d3348;border-radius:6px;color:#e2e8f0;padding:7px 10px;font-size:11px;width:100%">
+            <button id="btn-load-accounts" onclick="loadMetaAdAccounts()" class="btn-primary" style="white-space:nowrap"><i class="ti ti-search"></i> Buscar contas</button>
+          </div>
+          <select id="meta-account-select" style="display:none;width:100%;background:#13151f;border:1px solid #2d3348;border-radius:6px;color:#e2e8f0;padding:7px 10px;font-size:11px;margin-bottom:8px"></select>
+          <button id="btn-save-meta" onclick="saveMetaAccount()" class="btn-primary" style="display:none"><i class="ti ti-check"></i> Salvar e conectar</button>
+          <div style="font-size:10px;color:#4a5568;margin-top:8px">
+            <i class="ti ti-info-circle" style="font-size:11px"></i>
+            Como pegar o token: Gerenciador de Anúncios → Configurações → Acesso à API → Token de acesso
+          </div>
+        </div>
+
         <div class="filter-row">
           <input class="inp-search" placeholder="Filtrar por nome..." id="filter-meta">
           <select class="sel-sm" id="status-meta"><option value="">Qualquer status</option><option value="active">Ativa</option><option value="paused">Pausada</option></select>

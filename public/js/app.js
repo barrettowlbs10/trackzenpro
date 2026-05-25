@@ -194,7 +194,24 @@ async function loadSummary(period = 'today') {
 // ===== PLATFORM COM TABELA COMPLETA =====
 async function loadPlatform(platform) {
   try {
-    const camps = await fetch(`${API}/campaigns?platform=${platform}`, { headers: headers() }).then(r => r.json());
+    let camps;
+
+    // Tentar puxar dados reais do Meta se for meta
+    if (platform === 'meta') {
+      const realData = await loadMetaRealData();
+      if (realData && realData.length > 0) {
+        camps = realData;
+        // Mostrar badge de dados reais
+        const badge = document.getElementById('meta-realdata-badge');
+        if (badge) badge.style.display = 'inline';
+      } else {
+        camps = await fetch(`${API}/campaigns?platform=${platform}`, { headers: headers() }).then(r => r.json());
+        // Mostrar card de configuração se não configurado
+        showMetaSetupIfNeeded();
+      }
+    } else {
+      camps = await fetch(`${API}/campaigns?platform=${platform}`, { headers: headers() }).then(r => r.json());
+    }
     const total_rev = camps.reduce((s, c) => s + (c.revenue || 0), 0);
     const total_cnt = camps.reduce((s, c) => s + (c.sales_count || 0), 0);
     const total_spent = camps.reduce((s, c) => s + (c.spent || 0), 0);
@@ -629,4 +646,67 @@ function makeColumnsResizable(tableWrap) {
       document.addEventListener('mouseup', onUp);
     });
   });
+}
+
+// ===== META ADS API FRONTEND =====
+let metaConfigured = false;
+
+async function checkMetaStatus() {
+  try {
+    const r = await fetch(`${API}/meta/status`, { headers: headers() });
+    const d = await r.json();
+    metaConfigured = d.configured;
+    return d;
+  } catch { return { configured: false }; }
+}
+
+async function loadMetaAdAccounts() {
+  const token = document.getElementById('meta-token-input')?.value;
+  if (!token) { alert('Cole o token de acesso primeiro!'); return; }
+  const btn = document.getElementById('btn-load-accounts');
+  if (btn) { btn.textContent = 'Carregando...'; btn.disabled = true; }
+  try {
+    const r = await fetch(`${API}/meta/ad-accounts?access_token=${encodeURIComponent(token)}`, { headers: headers() });
+    const d = await r.json();
+    if (!d.success) { alert('Erro: ' + d.error); return; }
+    const sel = document.getElementById('meta-account-select');
+    if (sel) {
+      sel.innerHTML = '<option value="">Selecione a conta...</option>' +
+        d.accounts.map(a => `<option value="${a.id}">${a.name} (${a.id})</option>`).join('');
+      sel.style.display = 'block';
+      document.getElementById('btn-save-meta').style.display = 'inline-flex';
+    }
+  } catch(e) { alert('Erro ao buscar contas: ' + e.message); }
+  finally { if (btn) { btn.textContent = 'Buscar contas'; btn.disabled = false; } }
+}
+
+async function saveMetaAccount() {
+  const token = document.getElementById('meta-token-input')?.value;
+  const account = document.getElementById('meta-account-select')?.value;
+  if (!token || !account) { alert('Selecione uma conta!'); return; }
+  try {
+    const r = await fetch(`${API}/meta/account`, { method:'POST', headers:headers(), body:JSON.stringify({ ad_account_id: account, access_token: token }) });
+    const d = await r.json();
+    if (d.success) {
+      alert('✅ Conta Meta configurada! Clique em Atualizar para puxar os dados reais.');
+      metaConfigured = true;
+      document.getElementById('meta-setup-card')?.style && (document.getElementById('meta-setup-card').style.display = 'none');
+      loadPlatform('meta');
+    }
+  } catch(e) { alert('Erro: ' + e.message); }
+}
+
+async function loadMetaRealData() {
+  try {
+    const r = await fetch(`${API}/meta/campaigns`, { headers: headers() });
+    const d = await r.json();
+    if (d.needsSetup) return null;
+    if (!d.success) { console.log('Meta API erro:', d.error); return null; }
+    return d.campaigns;
+  } catch { return null; }
+}
+
+function showMetaSetupIfNeeded() {
+  const card = document.getElementById('meta-setup-card');
+  if (card) card.style.display = metaConfigured ? 'none' : 'block';
 }
