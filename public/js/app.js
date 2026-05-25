@@ -784,9 +784,12 @@ async function resetUserEvents(userId) {
 async function checkAdminAccess() {
   try {
     const r = await fetch(`${API}/admin/stats`, { headers: headers() });
-    if (r.ok) {
-      const nav = document.getElementById('nav-admin');
-      if (nav) nav.style.display = 'flex';
+    const nav = document.getElementById('nav-admin');
+    if (r.ok && nav) {
+      nav.style.display = 'flex';
+      nav.style.setProperty('display', 'flex', 'important');
     }
-  } catch {}
+  } catch(e) {
+    console.log('Admin check:', e);
+  }
 }
