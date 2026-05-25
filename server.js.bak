@@ -1,0 +1,496 @@
+const express = require('express');
+const Database = require('better-sqlite3');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const cors = require('cors');
+const { v4: uuidv4 } = require('uuid');
+const path = require('path');
+
+const app = express();
+const PORT = 3000;
+const JWT_SECRET = 'trackzenpro-secret-2024';
+
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Banco de dados
+const db = new Database(path.join(__dirname, 'data', 'trackzen.db'));
+
+// Criar tabelas
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    password TEXT NOT NULL,
+    plan TEXT DEFAULT 'free',
+    plan_expires TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS sales (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    platform TEXT,
+    campaign TEXT,
+    adset TEXT,
+    ad TEXT,
+    utm_source TEXT,
+    utm_medium TEXT,
+    utm_campaign TEXT,
+    utm_content TEXT,
+    utm_term TEXT,
+    product TEXT,
+    value REAL DEFAULT 0,
+    status TEXT DEFAULT 'approved',
+    payment_method TEXT,
+    customer_email TEXT,
+    customer_name TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS pixels (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    pixel_id TEXT NOT NULL,
+    access_token TEXT,
+    active INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS rules (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    platform TEXT,
+    condition_metric TEXT,
+    condition_operator TEXT,
+    condition_value REAL,
+    action TEXT,
+    action_value REAL,
+    frequency_hours INTEGER DEFAULT 2,
+    active INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS webhooks (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    url TEXT NOT NULL,
+    secret TEXT,
+    active INTEGER DEFAULT 1,
+    last_received TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS utms (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT,
+    base_url TEXT,
+    utm_source TEXT,
+    utm_medium TEXT,
+    utm_campaign TEXT,
+    utm_content TEXT,
+    utm_term TEXT,
+    full_url TEXT,
+    clicks INTEGER DEFAULT 0,
+    conversions INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    type TEXT,
+    title TEXT,
+    message TEXT,
+    read INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+`);
+
+// Criar usuário demo se não existir
+const demoExists = db.prepare('SELECT id FROM users WHERE email = ?').get('demo@trackzenpro.com');
+if (!demoExists) {
+  const hash = bcrypt.hashSync('demo123', 10);
+  db.prepare('INSERT INTO users (id, name, email, password, plan) VALUES (?, ?, ?, ?, ?)').run(
+    uuidv4(), 'Usuário Demo', 'demo@trackzenpro.com', hash, 'pro'
+  );
+
+  // Dados demo de vendas
+  const demoUser = db.prepare('SELECT id FROM users WHERE email = ?').get('demo@trackzenpro.com');
+  const platforms = ['meta', 'tiktok', 'meta', 'meta', 'google', 'meta', 'tiktok'];
+  const campaigns = ['ABO - Escala 03', 'UGC VSL 01', 'CBO - Conversão', 'Remarketing 7d', 'Google Pesquisa', 'ABO - Público 02', 'Top of Funnel'];
+  const products = ['Produto Principal', 'Produto Principal', 'Produto VIP', 'Produto Principal', 'Produto VIP', 'Produto Principal', 'Produto Principal'];
+  const methods = ['pix', 'credit_card', 'pix', 'pix', 'credit_card', 'boleto', 'pix'];
+
+  for (let i = 0; i < 50; i++) {
+    const idx = i % platforms.length;
+    const daysAgo = Math.floor(i / 7);
+    const date = new Date();
+    date.setDate(date.getDate() - daysAgo);
+    date.setHours(Math.floor(Math.random() * 20) + 4);
+
+    db.prepare(`INSERT INTO sales (id, user_id, platform, campaign, utm_source, utm_medium, utm_campaign, product, value, payment_method, created_at) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      uuidv4(), demoUser.id, platforms[idx], campaigns[idx],
+      platforms[idx] === 'meta' ? 'facebook' : platforms[idx],
+      'cpc', campaigns[idx].toLowerCase().replace(/\s+/g, '-'),
+      products[idx], 97 + (idx * 10), methods[idx],
+      date.toISOString()
+    );
+  }
+
+  // Demo pixels
+  db.prepare(`INSERT INTO pixels (id, user_id, platform, pixel_id, active) VALUES (?, ?, ?, ?, ?)`).run(
+    uuidv4(), demoUser.id, 'meta', '123456789012345', 1
+  );
+  db.prepare(`INSERT INTO pixels (id, user_id, platform, pixel_id, active) VALUES (?, ?, ?, ?, ?)`).run(
+    uuidv4(), demoUser.id, 'tiktok', 'TK987654321', 1
+  );
+
+  // Demo rules
+  db.prepare(`INSERT INTO rules (id, user_id, name, platform, condition_metric, condition_operator, condition_value, action, frequency_hours) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    uuidv4(), demoUser.id, 'GASTOU 9 REAIS NAO VENDEU DESLIGA', 'meta', 'spend', '>', 9, 'pause_campaign', 2
+  );
+  db.prepare(`INSERT INTO rules (id, user_id, name, platform, condition_metric, condition_operator, condition_value, action, action_value, frequency_hours) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    uuidv4(), demoUser.id, 'CPA BAIXO AUMENTA ORÇAMENTO', 'meta', 'cpa', '<', 15, 'increase_budget', 30, 3
+  );
+
+  // Demo webhooks
+  db.prepare(`INSERT INTO webhooks (id, user_id, platform, url) VALUES (?, ?, ?, ?)`).run(
+    uuidv4(), demoUser.id, 'hotmart', 'https://trackzenpro.com/webhook/hotmart'
+  );
+  db.prepare(`INSERT INTO webhooks (id, user_id, platform, url) VALUES (?, ?, ?, ?)`).run(
+    uuidv4(), demoUser.id, 'kiwify', 'https://trackzenpro.com/webhook/kiwify'
+  );
+
+  // Demo UTMs
+  db.prepare(`INSERT INTO utms (id, user_id, name, base_url, utm_source, utm_medium, utm_campaign, full_url, clicks, conversions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    uuidv4(), demoUser.id, 'Meta - Escala 03',
+    'https://seusite.com/produto', 'facebook', 'cpc', 'abo-escala-03',
+    'https://seusite.com/produto?utm_source=facebook&utm_medium=cpc&utm_campaign=abo-escala-03',
+    4385, 72
+  );
+  db.prepare(`INSERT INTO utms (id, user_id, name, base_url, utm_source, utm_medium, utm_campaign, full_url, clicks, conversions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    uuidv4(), demoUser.id, 'TikTok - VSL 01',
+    'https://seusite.com/produto', 'tiktok', 'paid', 'ugc-vsl-01',
+    'https://seusite.com/produto?utm_source=tiktok&utm_medium=paid&utm_campaign=ugc-vsl-01',
+    2100, 38
+  );
+
+  // Demo notifications
+  db.prepare(`INSERT INTO notifications (id, user_id, type, title, message) VALUES (?, ?, ?, ?, ?)`).run(
+    uuidv4(), demoUser.id, 'sale', 'Venda aprovada', 'Nova venda de R$97,00 via Meta Ads - ABO Escala 03'
+  );
+  db.prepare(`INSERT INTO notifications (id, user_id, type, title, message) VALUES (?, ?, ?, ?, ?)`).run(
+    uuidv4(), demoUser.id, 'alert', 'ROAS abaixo de 3x', 'TikTok - Top of Funnel com ROAS 2.31x nas últimas 2h'
+  );
+  db.prepare(`INSERT INTO notifications (id, user_id, type, title, message) VALUES (?, ?, ?, ?, ?)`).run(
+    uuidv4(), demoUser.id, 'rule', 'Regra executada', 'Campanha "Teste Criativo" pausada automaticamente - CPA R$22,31'
+  );
+}
+
+// ==================== MIDDLEWARE AUTH ====================
+function authMiddleware(req, res, next) {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'Token necessário' });
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch {
+    res.status(401).json({ error: 'Token inválido' });
+  }
+}
+
+// ==================== ROTAS AUTH ====================
+app.post('/api/auth/login', (req, res) => {
+  const { email, password } = req.body;
+  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+  if (!user || !bcrypt.compareSync(password, user.password)) {
+    return res.status(401).json({ error: 'Email ou senha incorretos' });
+  }
+  const token = jwt.sign({ id: user.id, email: user.email, name: user.name, plan: user.plan }, JWT_SECRET, { expiresIn: '7d' });
+  res.json({ token, user: { id: user.id, name: user.name, email: user.email, plan: user.plan } });
+});
+
+app.post('/api/auth/register', (req, res) => {
+  const { name, email, password } = req.body;
+  if (!name || !email || !password) return res.status(400).json({ error: 'Preencha todos os campos' });
+  const exists = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+  if (exists) return res.status(400).json({ error: 'Email já cadastrado' });
+  const hash = bcrypt.hashSync(password, 10);
+  const id = uuidv4();
+  db.prepare('INSERT INTO users (id, name, email, password) VALUES (?, ?, ?, ?)').run(id, name, email, hash);
+  const token = jwt.sign({ id, email, name, plan: 'free' }, JWT_SECRET, { expiresIn: '7d' });
+  res.json({ token, user: { id, name, email, plan: 'free' } });
+});
+
+// ==================== ROTAS DASHBOARD ====================
+app.get('/api/dashboard/summary', authMiddleware, (req, res) => {
+  const { period = 'today' } = req.query;
+  let dateFilter = '';
+  const now = new Date();
+
+  if (period === 'today') {
+    const today = now.toISOString().split('T')[0];
+    dateFilter = `AND date(created_at) = '${today}'`;
+  } else if (period === 'yesterday') {
+    const yesterday = new Date(now); yesterday.setDate(now.getDate()-1);
+    dateFilter = `AND date(created_at) = '${yesterday.toISOString().split('T')[0]}'`;
+  } else if (period === '7days') {
+    dateFilter = `AND created_at >= datetime('now', '-7 days')`;
+  } else if (period === '30days') {
+    dateFilter = `AND created_at >= datetime('now', '-30 days')`;
+  } else if (period === 'month') {
+    dateFilter = `AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')`;
+  }
+
+  const sales = db.prepare(`SELECT * FROM sales WHERE user_id = ? AND status = 'approved' ${dateFilter}`).all(req.user.id);
+  const revenue = sales.reduce((s, sale) => s + sale.value, 0);
+  const count = sales.length;
+  const avgTicket = count > 0 ? revenue / count : 0;
+
+  const byPlatform = {};
+  sales.forEach(s => {
+    if (!byPlatform[s.platform]) byPlatform[s.platform] = { revenue: 0, count: 0 };
+    byPlatform[s.platform].revenue += s.value;
+    byPlatform[s.platform].count += s.count || 1;
+  });
+
+  const byCampaign = {};
+  sales.forEach(s => {
+    if (!s.campaign) return;
+    if (!byCampaign[s.campaign]) byCampaign[s.campaign] = { revenue: 0, count: 0, platform: s.platform };
+    byCampaign[s.campaign].revenue += s.value;
+    byCampaign[s.campaign].count += 1;
+  });
+
+  const byPayment = {};
+  sales.forEach(s => {
+    if (!byPayment[s.payment_method]) byPayment[s.payment_method] = 0;
+    byPayment[s.payment_method] += s.value;
+  });
+
+  // Vendas por hora (últimas 24h)
+  const byHour = {};
+  sales.forEach(s => {
+    const h = new Date(s.created_at).getHours();
+    if (!byHour[h]) byHour[h] = { revenue: 0, count: 0 };
+    byHour[h].revenue += s.value;
+    byHour[h].count += 1;
+  });
+
+  res.json({ revenue, count, avgTicket, byPlatform, byCampaign, byPayment, byHour, recentSales: sales.slice(-10).reverse() });
+});
+
+app.get('/api/sales', authMiddleware, (req, res) => {
+  const { platform, limit = 100, offset = 0 } = req.query;
+  let query = 'SELECT * FROM sales WHERE user_id = ?';
+  const params = [req.user.id];
+  if (platform) { query += ' AND platform = ?'; params.push(platform); }
+  query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+  params.push(Number(limit), Number(offset));
+  const sales = db.prepare(query).all(...params);
+  const total = db.prepare('SELECT COUNT(*) as c FROM sales WHERE user_id = ?').get(req.user.id).c;
+  res.json({ sales, total });
+});
+
+// ==================== WEBHOOK RECEBEDOR ====================
+app.post('/webhook/:platform/:userId', (req, res) => {
+  const { platform, userId } = req.params;
+  const data = req.body;
+
+  let value = 0, product = '', status = 'approved', paymentMethod = 'pix', campaign = '', utmSource = '', utmMedium = '', utmCampaign = '', customerEmail = '', customerName = '';
+
+  if (platform === 'hotmart') {
+    value = data?.purchase?.original_offer_price?.value || data?.purchase?.price?.value || 0;
+    product = data?.product?.name || '';
+    status = data?.purchase?.status === 'APPROVED' ? 'approved' : 'pending';
+    paymentMethod = data?.purchase?.payment?.type?.toLowerCase() || 'pix';
+    customerEmail = data?.buyer?.email || '';
+    customerName = data?.buyer?.name || '';
+    utmSource = data?.tracking?.source || '';
+    utmCampaign = data?.tracking?.campaign || '';
+  } else if (platform === 'kiwify') {
+    value = data?.order?.amount / 100 || 0;
+    product = data?.product?.name || '';
+    status = data?.order?.status === 'paid' ? 'approved' : 'pending';
+    paymentMethod = data?.order?.payment_method || 'pix';
+    customerEmail = data?.customer?.email || '';
+    utmSource = data?.utm?.source || '';
+    utmCampaign = data?.utm?.campaign || '';
+  } else if (platform === 'monetizze') {
+    value = data?.venda?.valor || 0;
+    product = data?.produto?.nome || '';
+    status = data?.venda?.status_nome === 'Aprovado' ? 'approved' : 'pending';
+    customerEmail = data?.comprador?.email || '';
+    utmSource = data?.utm_source || '';
+  } else {
+    value = data?.value || data?.amount || data?.total || 0;
+    product = data?.product || data?.product_name || '';
+    status = data?.status || 'approved';
+    customerEmail = data?.email || data?.customer_email || '';
+    utmSource = data?.utm_source || '';
+    utmCampaign = data?.utm_campaign || '';
+  }
+
+  const user = db.prepare('SELECT id FROM users WHERE id = ?').get(userId);
+  if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+
+  const id = uuidv4();
+  db.prepare(`INSERT INTO sales (id, user_id, platform, product, value, status, payment_method, customer_email, customer_name, utm_source, utm_medium, utm_campaign) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    id, userId, platform, product, value, status, paymentMethod, customerEmail, customerName, utmSource, utmMedium, utmCampaign
+  );
+
+  db.prepare(`INSERT INTO notifications (id, user_id, type, title, message) VALUES (?, ?, ?, ?, ?)`).run(
+    uuidv4(), userId, 'sale', `Venda ${status === 'approved' ? 'aprovada' : 'pendente'}`,
+    `Nova venda de R$${value.toFixed(2)} via ${platform} - ${product}`
+  );
+
+  res.json({ success: true, id });
+});
+
+// ==================== PIXELS ====================
+app.get('/api/pixels', authMiddleware, (req, res) => {
+  const pixels = db.prepare('SELECT * FROM pixels WHERE user_id = ?').all(req.user.id);
+  res.json(pixels);
+});
+
+app.post('/api/pixels', authMiddleware, (req, res) => {
+  const { platform, pixel_id, access_token } = req.body;
+  const id = uuidv4();
+  db.prepare('INSERT INTO pixels (id, user_id, platform, pixel_id, access_token) VALUES (?, ?, ?, ?, ?)').run(id, req.user.id, platform, pixel_id, access_token || '');
+  res.json({ id, platform, pixel_id, active: 1 });
+});
+
+app.delete('/api/pixels/:id', authMiddleware, (req, res) => {
+  db.prepare('DELETE FROM pixels WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
+  res.json({ success: true });
+});
+
+// ==================== REGRAS ====================
+app.get('/api/rules', authMiddleware, (req, res) => {
+  const rules = db.prepare('SELECT * FROM rules WHERE user_id = ?').all(req.user.id);
+  res.json(rules);
+});
+
+app.post('/api/rules', authMiddleware, (req, res) => {
+  const { name, platform, condition_metric, condition_operator, condition_value, action, action_value, frequency_hours } = req.body;
+  const id = uuidv4();
+  db.prepare('INSERT INTO rules (id, user_id, name, platform, condition_metric, condition_operator, condition_value, action, action_value, frequency_hours) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+    id, req.user.id, name, platform, condition_metric, condition_operator, condition_value, action, action_value || 0, frequency_hours || 2
+  );
+  res.json({ id, name, active: 1 });
+});
+
+app.patch('/api/rules/:id', authMiddleware, (req, res) => {
+  const { active } = req.body;
+  db.prepare('UPDATE rules SET active = ? WHERE id = ? AND user_id = ?').run(active ? 1 : 0, req.params.id, req.user.id);
+  res.json({ success: true });
+});
+
+app.delete('/api/rules/:id', authMiddleware, (req, res) => {
+  db.prepare('DELETE FROM rules WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
+  res.json({ success: true });
+});
+
+// ==================== WEBHOOKS ====================
+app.get('/api/webhooks', authMiddleware, (req, res) => {
+  const hooks = db.prepare('SELECT * FROM webhooks WHERE user_id = ?').all(req.user.id);
+  res.json(hooks);
+});
+
+app.post('/api/webhooks', authMiddleware, (req, res) => {
+  const { platform } = req.body;
+  const id = uuidv4();
+  const url = `http://localhost:${PORT}/webhook/${platform}/${req.user.id}`;
+  db.prepare('INSERT INTO webhooks (id, user_id, platform, url) VALUES (?, ?, ?, ?)').run(id, req.user.id, platform, url);
+  res.json({ id, platform, url, active: 1 });
+});
+
+// ==================== UTMs ====================
+app.get('/api/utms', authMiddleware, (req, res) => {
+  const utms = db.prepare('SELECT * FROM utms WHERE user_id = ? ORDER BY created_at DESC').all(req.user.id);
+  res.json(utms);
+});
+
+app.post('/api/utms', authMiddleware, (req, res) => {
+  const { name, base_url, utm_source, utm_medium, utm_campaign, utm_content, utm_term } = req.body;
+  const params = new URLSearchParams();
+  if (utm_source) params.set('utm_source', utm_source);
+  if (utm_medium) params.set('utm_medium', utm_medium);
+  if (utm_campaign) params.set('utm_campaign', utm_campaign);
+  if (utm_content) params.set('utm_content', utm_content);
+  if (utm_term) params.set('utm_term', utm_term);
+  const full_url = `${base_url}?${params.toString()}`;
+  const id = uuidv4();
+  db.prepare('INSERT INTO utms (id, user_id, name, base_url, utm_source, utm_medium, utm_campaign, utm_content, utm_term, full_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+    id, req.user.id, name, base_url, utm_source, utm_medium, utm_campaign, utm_content || '', utm_term || '', full_url
+  );
+  res.json({ id, full_url });
+});
+
+app.delete('/api/utms/:id', authMiddleware, (req, res) => {
+  db.prepare('DELETE FROM utms WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
+  res.json({ success: true });
+});
+
+// ==================== NOTIFICAÇÕES ====================
+app.get('/api/notifications', authMiddleware, (req, res) => {
+  const notifs = db.prepare('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 50').all(req.user.id);
+  res.json(notifs);
+});
+
+app.patch('/api/notifications/read-all', authMiddleware, (req, res) => {
+  db.prepare('UPDATE notifications SET read = 1 WHERE user_id = ?').run(req.user.id);
+  res.json({ success: true });
+});
+
+// ==================== RELATÓRIOS ====================
+app.get('/api/reports', authMiddleware, (req, res) => {
+  const { period = '7days' } = req.query;
+  let days = 7;
+  if (period === '30days') days = 30;
+  if (period === 'month') days = 30;
+
+  const rows = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const date = new Date();
+    date.setDate(date.getDate() - i);
+    const dateStr = date.toISOString().split('T')[0];
+    const dayName = date.toLocaleDateString('pt-BR', { weekday: 'long' });
+
+    const sales = db.prepare(`SELECT * FROM sales WHERE user_id = ? AND date(created_at) = ? AND status = 'approved'`).all(req.user.id, dateStr);
+    const revenue = sales.reduce((s, x) => s + x.value, 0);
+    const count = sales.length;
+
+    rows.push({ date: dateStr, day: dayName, count, revenue, cpa: count > 0 ? 0 : null });
+  }
+  res.json(rows);
+});
+
+// ==================== USER INFO ====================
+app.get('/api/user', authMiddleware, (req, res) => {
+  const user = db.prepare('SELECT id, name, email, plan, created_at FROM users WHERE id = ?').get(req.user.id);
+  const salesCount = db.prepare('SELECT COUNT(*) as c FROM sales WHERE user_id = ?').get(req.user.id).c;
+  const pixelCount = db.prepare('SELECT COUNT(*) as c FROM pixels WHERE user_id = ?').get(req.user.id).c;
+  const webhookCount = db.prepare('SELECT COUNT(*) as c FROM webhooks WHERE user_id = ?').get(req.user.id).c;
+  res.json({ ...user, salesCount, pixelCount, webhookCount });
+});
+
+app.listen(PORT, () => {
+  console.log(`\n✅ TrackZen Pro rodando em http://localhost:${PORT}`);
+  console.log(`📧 Login demo: demo@trackzenpro.com`);
+  console.log(`🔑 Senha demo: demo123\n`);
+});

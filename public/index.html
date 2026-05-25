@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TrackZen Pro</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-screen">
+  <div class="login-box">
+    <div class="login-logo">
+      <div class="logo-icon"><i class="ti ti-radar-2"></i></div>
+      <div><div class="login-name">TrackZen</div><div class="login-tag">PRO</div></div>
+    </div>
+    <div id="login-error" class="alert-error" style="display:none"></div>
+    <div class="form-group"><label>Email</label><input type="email" id="login-email" placeholder="seu@email.com" value="demo@trackzenpro.com"></div>
+    <div class="form-group"><label>Senha</label><input type="password" id="login-password" placeholder="••••••••" value="demo123"></div>
+    <button class="btn-primary btn-full" onclick="doLogin()">Entrar</button>
+    <p class="login-hint">Não tem conta? <a href="#" onclick="showRegister()">Criar agora</a></p>
+  </div>
+</div>
+
+<!-- REGISTRO -->
+<div id="register-screen" style="display:none">
+  <div class="login-box">
+    <div class="login-logo">
+      <div class="logo-icon"><i class="ti ti-radar-2"></i></div>
+      <div><div class="login-name">TrackZen</div><div class="login-tag">PRO</div></div>
+    </div>
+    <div id="reg-error" class="alert-error" style="display:none"></div>
+    <div class="form-group"><label>Nome</label><input type="text" id="reg-name" placeholder="Seu nome"></div>
+    <div class="form-group"><label>Email</label><input type="email" id="reg-email" placeholder="seu@email.com"></div>
+    <div class="form-group"><label>Senha</label><input type="password" id="reg-password" placeholder="••••••••"></div>
+    <button class="btn-primary btn-full" onclick="doRegister()">Criar conta</button>
+    <p class="login-hint">Já tem conta? <a href="#" onclick="showLogin()">Entrar</a></p>
+  </div>
+</div>
+
+<!-- APP PRINCIPAL -->
+<div id="app" style="display:none">
+  <div class="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-icon"><i class="ti ti-radar-2"></i></div>
+      <div><div class="logo-name">TrackZen</div><div class="logo-tag">PRO</div></div>
+    </div>
+    <nav>
+      <div class="nav-item active" data-page="resumo" onclick="navigate('resumo',this)"><i class="ti ti-layout-dashboard"></i> Resumo</div>
+      <div class="nav-item" data-page="meta" onclick="navigate('meta',this)"><i class="ti ti-brand-facebook"></i> Meta</div>
+      <div class="nav-item" data-page="tiktok" onclick="navigate('tiktok',this)"><i class="ti ti-brand-tiktok"></i> TikTok</div>
+      <div class="nav-item" data-page="google" onclick="navigate('google',this)"><i class="ti ti-brand-google"></i> Google</div>
+      <div class="nav-sep">FERRAMENTAS</div>
+      <div class="nav-item" data-page="utms" onclick="navigate('utms',this)"><i class="ti ti-link"></i> UTMs</div>
+      <div class="nav-item" data-page="integracoes" onclick="navigate('integracoes',this)"><i class="ti ti-plug"></i> Integrações</div>
+      <div class="nav-item" data-page="pixels" onclick="navigate('pixels',this)"><i class="ti ti-cpu"></i> Pixels</div>
+      <div class="nav-item" data-page="regras" onclick="navigate('regras',this)"><i class="ti ti-robot"></i> Regras</div>
+      <div class="nav-sep">GESTÃO</div>
+      <div class="nav-item" data-page="relatorios" onclick="navigate('relatorios',this)"><i class="ti ti-chart-bar"></i> Relatórios</div>
+      <div class="nav-item" data-page="notificacoes" onclick="navigate('notificacoes',this)"><i class="ti ti-bell"></i> Notificações <span class="nav-badge" id="notif-badge" style="display:none">0</span></div>
+      <div class="nav-item" data-page="assinatura" onclick="navigate('assinatura',this)"><i class="ti ti-credit-card"></i> Assinatura</div>
+      <div class="nav-item" data-page="conta" onclick="navigate('conta',this)"><i class="ti ti-user"></i> Minha conta</div>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="plan-box">
+        <div class="plan-lbl">Plano atual</div>
+        <div class="plan-nm" id="sidebar-plan">Pro</div>
+        <div class="plan-ev" id="sidebar-events">— / — eventos</div>
+        <div class="plan-bar"><div class="plan-fill" id="sidebar-events-fill" style="width:0%"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <div class="page-title" id="pg-title">Dashboard — Resumo</div>
+        <div class="page-sub" id="pg-sub">Visão geral de todas as plataformas</div>
+      </div>
+      <div class="topbar-right">
+        <div class="top-btn"><i class="ti ti-calendar"></i> <span id="top-date"></span></div>
+        <div class="top-btn" onclick="refreshPage()"><i class="ti ti-refresh"></i> Atualizar</div>
+        <div style="display:flex;align-items:center;gap:8px;cursor:pointer" onclick="navigate('conta',document.querySelector('[data-page=conta]'))">
+          <div class="user-av" id="user-av">U</div>
+          <div><div class="user-name" id="user-name">Usuário</div><div class="user-role">Admin</div></div>
+        </div>
+        <div class="top-btn" onclick="logout()" title="Sair"><i class="ti ti-logout"></i></div>
+      </div>
+    </div>
+
+    <div class="content">
+      <!-- ===== RESUMO ===== -->
+      <div class="page active" id="page-resumo">
+        <div class="kpi-row" id="kpi-row"></div>
+        <div class="charts-row">
+          <div class="card">
+            <div class="card-hd">
+              <div class="card-ttl"><i class="ti ti-chart-line"></i> Faturamento por hora</div>
+              <select class="sel-sm" onchange="loadSummary(this.value)"><option value="today">Hoje</option><option value="7d">7 dias</option></select>
+            </div>
+            <div style="position:relative;height:130px"><canvas id="c-fat" role="img" aria-label="Faturamento por hora">Faturamento ao longo do dia.</canvas></div>
+          </div>
+          <div class="card">
+            <div class="card-hd"><div class="card-ttl"><i class="ti ti-shopping-bag"></i> Vendas por hora</div></div>
+            <div style="position:relative;height:130px"><canvas id="c-ven" role="img" aria-label="Vendas por hora">Vendas ao longo do dia.</canvas></div>
+          </div>
+          <div class="card">
+            <div class="card-hd"><div class="card-ttl"><i class="ti ti-map-pin"></i> Fontes de tráfego</div></div>
+            <div style="position:relative;height:100px"><canvas id="c-src" role="img" aria-label="Fontes de tráfego">Distribuição por fonte.</canvas></div>
+            <div id="src-legend" style="margin-top:8px;font-size:11px;color:#6b7280"></div>
+          </div>
+        </div>
+        <div class="bottom-row">
+          <div class="card">
+            <div class="card-hd"><div class="card-ttl"><i class="ti ti-speakerphone"></i> Campanhas</div><span class="badge-purple" id="camp-count">—</span></div>
+            <div class="table-wrap"><table id="camp-table">
+              <thead><tr><th>Campanha</th><th>Fonte</th><th>Status</th><th>Vendas</th><th>Faturamento</th><th>ROAS</th></tr></thead>
+              <tbody id="camp-tbody"></tbody>
+            </table></div>
+          </div>
+          <div class="card">
+            <div class="card-hd"><div class="card-ttl"><i class="ti ti-bolt"></i> Conversões recentes</div><span class="badge-green">ao vivo</span></div>
+            <div id="recent-sales"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== META / TIKTOK / GOOGLE ===== -->
+      <div class="page" id="page-meta">
+        <div class="kpi-row" id="kpi-meta"></div>
+        <div class="tabs-bar" id="tabs-meta">
+          <div class="tab active" onclick="switchTab('meta','contas',this)"><i class="ti ti-building"></i> Contas</div>
+          <div class="tab" onclick="switchTab('meta','campanhas',this)"><i class="ti ti-speakerphone"></i> Campanhas</div>
+          <div class="tab" onclick="switchTab('meta','conjuntos',this)"><i class="ti ti-layout-grid"></i> Conjuntos</div>
+          <div class="tab" onclick="switchTab('meta','anuncios',this)"><i class="ti ti-photo"></i> Anúncios</div>
+        </div>
+        <div class="filter-row">
+          <input class="inp-search" placeholder="Filtrar por nome..." id="filter-meta">
+          <select class="sel-sm" id="status-meta"><option value="">Qualquer status</option><option value="active">Ativa</option><option value="paused">Pausada</option></select>
+          <select class="sel-sm" id="period-meta"><option value="today">Hoje</option><option value="7d">7 dias</option><option value="30d">30 dias</option></select>
+          <div style="display:flex;align-items:center;gap:6px;margin-left:4px"><div class="badge-green" style="padding:4px 10px;">Todas as vendas trackeadas</div></div>
+          <button class="btn-upd" onclick="loadPlatform('meta')"><i class="ti ti-refresh"></i> Atualizar</button>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Campanha</th><th>Status</th><th>Orçamento</th><th>Conversas</th><th>Vendas</th><th>CPA</th><th>Gastos</th><th>Faturamento</th><th>Lucro</th><th>ROAS</th><th>Margem</th></tr></thead>
+          <tbody id="tbody-meta"></tbody>
+        </table></div>
+      </div>
+
+      <div class="page" id="page-tiktok">
+        <div class="kpi-row" id="kpi-tiktok"></div>
+        <div class="tabs-bar">
+          <div class="tab active"><i class="ti ti-speakerphone"></i> Campanhas</div>
+          <div class="tab"><i class="ti ti-layout-grid"></i> Grupos de anúncios</div>
+          <div class="tab"><i class="ti ti-photo"></i> Anúncios</div>
+        </div>
+        <div class="filter-row">
+          <input class="inp-search" placeholder="Filtrar por nome..." id="filter-tiktok">
+          <select class="sel-sm"><option>Qualquer status</option><option>Ativa</option><option>Pausada</option></select>
+          <select class="sel-sm" id="period-tiktok"><option value="today">Hoje</option><option value="7d">7 dias</option></select>
+          <button class="btn-upd" onclick="loadPlatform('tiktok')"><i class="ti ti-refresh"></i> Atualizar</button>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Campanha</th><th>Status</th><th>Impressões</th><th>Vendas</th><th>CPA</th><th>Gastos</th><th>Faturamento</th><th>ROAS</th></tr></thead>
+          <tbody id="tbody-tiktok"></tbody>
+        </table></div>
+      </div>
+
+      <div class="page" id="page-google">
+        <div class="kpi-row" id="kpi-google"></div>
+        <div class="tabs-bar">
+          <div class="tab active"><i class="ti ti-speakerphone"></i> Campanhas</div>
+          <div class="tab"><i class="ti ti-layout-grid"></i> Grupos de anúncios</div>
+          <div class="tab"><i class="ti ti-photo"></i> Anúncios</div>
+        </div>
+        <div class="filter-row">
+          <input class="inp-search" placeholder="Filtrar por nome..." id="filter-google">
+          <select class="sel-sm" id="period-google"><option value="today">Hoje</option><option value="7d">7 dias</option></select>
+          <button class="btn-upd" onclick="loadPlatform('google')"><i class="ti ti-refresh"></i> Atualizar</button>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Campanha</th><th>Status</th><th>Cliques</th><th>Vendas</th><th>CPA</th><th>Gastos</th><th>Faturamento</th><th>ROAS</th></tr></thead>
+          <tbody id="tbody-google"></tbody>
+        </table></div>
+      </div>
+
+      <!-- ===== UTMs ===== -->
+      <div class="page" id="page-utms">
+        <div class="section-hd"><div class="section-title">Relatório de UTMs</div></div>
+        <div class="tabs-bar" style="margin-bottom:14px">
+          <div class="tab active" onclick="this.parentElement.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));this.classList.add('active');document.getElementById('utms-report').style.display='block';document.getElementById('utms-create').style.display='none'"><i class="ti ti-chart-bar"></i> Relatório</div>
+          <div class="tab" onclick="this.parentElement.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));this.classList.add('active');document.getElementById('utms-report').style.display='none';document.getElementById('utms-create').style.display='block'"><i class="ti ti-plus"></i> Criar UTM</div>
+        </div>
+        <div id="utms-report">
+          <div class="filter-row">
+            <input class="inp-search" placeholder="Filtrar por nome...">
+            <select class="sel-sm"><option>Hoje</option><option>7 dias</option><option>30 dias</option></select>
+            <select class="sel-sm" id="utm-group"><option value="utm_campaign">utm_campaign</option><option value="utm_source">utm_source</option><option value="utm_medium">utm_medium</option></select>
+            <div style="margin-left:auto;display:flex;gap:6px"><button class="btn-upd" onclick="loadUtms()"><i class="ti ti-refresh"></i> Atualizar</button><button class="btn-upd" style="background:#1a1e2e"><i class="ti ti-download"></i> Exportar</button></div>
+          </div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>utm_campaign</th><th>Vendas</th><th>CPA</th><th>Gastos</th><th>Faturamento</th><th>Lucro</th><th>ROAS</th><th>Margem</th><th>ROI</th><th>Cliques</th><th>Conversões</th></tr></thead>
+            <tbody id="tbody-utms"></tbody>
+          </table></div>
+        </div>
+        <div id="utms-create" style="display:none">
+          <div class="card" style="max-width:600px">
+            <div class="card-hd"><div class="card-ttl"><i class="ti ti-link"></i> Gerar novo link UTM</div></div>
+            <div class="form-grid">
+              <div class="form-group"><label>URL de destino *</label><input type="url" id="utm-url" placeholder="https://seusite.com/produto"></div>
+              <div class="form-group"><label>Fonte (utm_source) *</label><input id="utm-source" placeholder="facebook, tiktok, google..."></div>
+              <div class="form-group"><label>Mídia (utm_medium)</label><input id="utm-medium" placeholder="cpc, paid, email..."></div>
+              <div class="form-group"><label>Campanha (utm_campaign)</label><input id="utm-campaign" placeholder="abo-escala-03"></div>
+              <div class="form-group"><label>Conteúdo (utm_content)</label><input id="utm-content" placeholder="criativo-a"></div>
+              <div class="form-group"><label>Termo (utm_term)</label><input id="utm-term" placeholder="palavra-chave"></div>
+            </div>
+            <div id="utm-result" style="display:none;margin:12px 0">
+              <div style="font-size:10px;color:#6b7280;margin-bottom:4px">Link gerado:</div>
+              <div id="utm-generated" style="background:#1a1e2e;border:1px solid #2d3348;border-radius:6px;padding:10px;font-size:11px;color:#a78bfa;word-break:break-all"></div>
+              <button class="btn-upd" style="margin-top:8px" onclick="copyUtm()"><i class="ti ti-copy"></i> Copiar link</button>
+            </div>
+            <button class="btn-primary" onclick="createUtm()" style="margin-top:4px"><i class="ti ti-link"></i> Gerar link</button>
+          </div>
+          <div class="card" style="margin-top:12px">
+            <div class="card-hd"><div class="card-ttl"><i class="ti ti-clock"></i> Links recentes</div></div>
+            <div id="utm-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== INTEGRAÇÕES ===== -->
+      <div class="page" id="page-integracoes">
+        <div class="section-hd"><div class="section-title">Integrações</div><div class="section-sub">Conecte suas plataformas e configure anúncios</div></div>
+        <div class="tabs-bar" style="margin-bottom:14px">
+          <div class="tab active"><i class="ti ti-brand-facebook"></i> Anúncios</div>
+          <div class="tab"><i class="ti ti-webhook"></i> Webhooks</div>
+          <div class="tab"><i class="ti ti-link"></i> UTMs</div>
+          <div class="tab"><i class="ti ti-cpu"></i> Pixel</div>
+        </div>
+        <div class="integ-grid">
+          <div class="integ-card" onclick="showWebhookModal('meta')">
+            <div class="integ-left"><div class="integ-icon" style="background:#1e3a5f"><i class="ti ti-brand-facebook" style="color:#60a5fa"></i></div><div><div class="integ-name">Meta Ads</div><div class="integ-status status-warn">Não conectado</div></div></div>
+            <i class="ti ti-chevron-right" style="color:#4a5568"></i>
+          </div>
+          <div class="integ-card" onclick="showWebhookModal('google')">
+            <div class="integ-left"><div class="integ-icon" style="background:#1e2a1e"><i class="ti ti-brand-google" style="color:#4ade80"></i></div><div><div class="integ-name">Google Ads</div><div class="integ-status status-warn">Não conectado</div></div></div>
+            <i class="ti ti-chevron-right" style="color:#4a5568"></i>
+          </div>
+          <div class="integ-card" onclick="showWebhookModal('tiktok')">
+            <div class="integ-left"><div class="integ-icon" style="background:#3b1f0a"><i class="ti ti-brand-tiktok" style="color:#fb923c"></i></div><div><div class="integ-name">TikTok Ads</div><div class="integ-status status-warn">Não conectado</div></div></div>
+            <i class="ti ti-chevron-right" style="color:#4a5568"></i>
+          </div>
+          <div class="integ-card" onclick="showWebhookModal('kwai')">
+            <div class="integ-left"><div class="integ-icon" style="background:#2a1e3b"><i class="ti ti-video" style="color:#a78bfa"></i></div><div><div class="integ-name">Kwai Ads</div><div class="integ-status status-warn">Não conectado</div></div></div>
+            <i class="ti ti-chevron-right" style="color:#4a5568"></i>
+          </div>
+        </div>
+        <div class="card" style="margin-top:14px">
+          <div class="card-hd"><div class="card-ttl"><i class="ti ti-webhook"></i> Seu webhook universal</div></div>
+          <div style="font-size:12px;color:#6b7280;margin-bottom:8px">Cole esta URL na sua plataforma de vendas para receber as conversões automaticamente:</div>
+          <div id="webhook-url" style="background:#1a1e2e;border:1px solid #2d3348;border-radius:6px;padding:10px;font-size:11px;color:#a78bfa;word-break:break-all">http://localhost:3000/api/webhook/...</div>
+          <button class="btn-upd" style="margin-top:8px" onclick="copyWebhook()"><i class="ti ti-copy"></i> Copiar URL</button>
+        </div>
+      </div>
+
+      <!-- ===== PIXELS ===== -->
+      <div class="page" id="page-pixels">
+        <div class="section-hd"><div class="section-title">Pixels</div><div class="section-sub">Gerencie seus pixels de rastreamento</div></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px" id="pixels-grid"></div>
+        <div class="card">
+          <div class="card-hd"><div class="card-ttl"><i class="ti ti-plus"></i> Adicionar pixel</div></div>
+          <div class="form-grid">
+            <div class="form-group"><label>Plataforma</label><select id="px-platform"><option value="meta">Meta</option><option value="tiktok">TikTok</option><option value="google">Google</option></select></div>
+            <div class="form-group"><label>ID do pixel</label><input id="px-id" placeholder="ex: 1234567890"></div>
+            <div class="form-group"><label>Token de acesso (opcional)</label><input id="px-token" placeholder="Para Conversions API"></div>
+          </div>
+          <button class="btn-primary" onclick="addPixel()"><i class="ti ti-cpu"></i> Adicionar pixel</button>
+        </div>
+      </div>
+
+      <!-- ===== REGRAS ===== -->
+      <div class="page" id="page-regras">
+        <div class="section-hd" style="display:flex;align-items:center;justify-content:space-between">
+          <div><div class="section-title">Regras automáticas</div><div class="section-sub">Automatize suas campanhas com condições e ações</div></div>
+          <button class="btn-primary" onclick="document.getElementById('rule-form').style.display=document.getElementById('rule-form').style.display==='none'?'block':'none'"><i class="ti ti-plus"></i> Criar regra</button>
+        </div>
+        <div id="rule-form" style="display:none" class="card" style="margin-bottom:14px">
+          <div class="card-hd"><div class="card-ttl"><i class="ti ti-robot"></i> Nova regra</div></div>
+          <div class="form-grid">
+            <div class="form-group"><label>Nome da regra</label><input id="rule-name" placeholder="Ex: PAUSAR CPA ALTO"></div>
+            <div class="form-group"><label>Plataforma</label><select id="rule-platform"><option value="meta">Meta</option><option value="tiktok">TikTok</option><option value="google">Google</option></select></div>
+            <div class="form-group"><label>Métrica</label><select id="rule-metric"><option value="cpa">CPA</option><option value="roas">ROAS</option><option value="spent_no_sale">Gasto sem venda</option><option value="spent">Gasto total</option></select></div>
+            <div class="form-group"><label>Condição</label><select id="rule-op"><option value="gt">Maior que</option><option value="lt">Menor que</option><option value="eq">Igual a</option></select></div>
+            <div class="form-group"><label>Valor</label><input type="number" id="rule-value" placeholder="0.00" step="0.01"></div>
+            <div class="form-group"><label>Ação</label><select id="rule-action"><option value="pause_campaign">Pausar campanha</option><option value="increase_budget">Aumentar orçamento (%)</option><option value="decrease_budget">Diminuir orçamento (%)</option><option value="notify">Apenas notificar</option></select></div>
+            <div class="form-group"><label>Valor da ação (%)</label><input type="number" id="rule-action-val" placeholder="Ex: 30" step="1"></div>
+            <div class="form-group"><label>Frequência</label><select id="rule-freq"><option value="1h">A cada 1 hora</option><option value="2h">A cada 2 horas</option><option value="3h">A cada 3 horas</option><option value="6h">A cada 6 horas</option><option value="24h">Uma vez por dia</option></select></div>
+          </div>
+          <button class="btn-primary" onclick="createRule()"><i class="ti ti-check"></i> Salvar regra</button>
+        </div>
+        <div class="card">
+          <div class="card-hd"><div class="card-ttl"><i class="ti ti-list"></i> Regras ativas</div></div>
+          <div class="table-wrap"><table>
+            <thead><tr><th style="width:40px"></th><th>Status</th><th>Nome e produto</th><th>Aplicada a</th><th>Ação e condição</th><th>Frequência</th><th></th></tr></thead>
+            <tbody id="tbody-rules"></tbody>
+          </table></div>
+        </div>
+      </div>
+
+      <!-- ===== RELATÓRIOS ===== -->
+      <div class="page" id="page-relatorios">
+        <div class="section-hd" style="display:flex;align-items:center;justify-content:space-between">
+          <div><div class="section-title">Relatórios</div><div class="section-sub">Use essa tela para visualizar relatórios diários</div></div>
+          <div style="display:flex;gap:8px">
+            <button class="btn-upd" onclick="loadReports()"><i class="ti ti-refresh"></i> Atualizar</button>
+            <button class="btn-upd" style="background:#1a1e2e" onclick="exportReport()"><i class="ti ti-download"></i> Exportar</button>
+          </div>
+        </div>
+        <div class="filter-row" style="margin-bottom:12px">
+          <select class="sel-sm"><option>Por dia</option><option>Por semana</option><option>Por mês</option></select>
+          <select class="sel-sm" id="report-period" onchange="loadReports()"><option value="7d">Essa semana</option><option value="30d">Esse mês</option></select>
+          <select class="sel-sm"><option>Todas as contas</option></select>
+          <select class="sel-sm"><option>Qualquer produto</option></select>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Data</th><th>Dia</th><th>Vendas</th><th>CPA</th><th>Gastos</th><th>Despesas</th><th>Faturamento</th><th>Lucro</th><th>ROAS</th><th>Margem</th><th>ROI</th><th>CPI</th><th>CPC</th><th>CTR</th></tr></thead>
+          <tbody id="tbody-reports"></tbody>
+        </table></div>
+      </div>
+
+      <!-- ===== NOTIFICAÇÕES ===== -->
+      <div class="page" id="page-notificacoes">
+        <div class="section-hd" style="display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <div class="section-title">Notificações de venda</div>
+            <div class="section-sub">Seja notificado sempre que for realizada uma nova venda</div>
+          </div>
+          <button class="btn-upd" onclick="markAllRead()"><i class="ti ti-check"></i> Marcar todas como lidas</button>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+          <div class="card">
+            <div class="card-hd"><div class="card-ttl"><i class="ti ti-bell"></i> Notificações de venda</div></div>
+            <div class="form-group"><label>Enviar vendas pendentes</label><select><option>Desabilitado</option><option>Habilitado</option></select></div>
+            <div class="form-group"><label>Enviar vendas aprovadas</label><select><option>Habilitado</option><option>Desabilitado</option></select></div>
+            <div class="form-group"><label>Valor da venda</label><select><option>Esconder</option><option>Mostrar</option></select></div>
+            <div class="form-group"><label>Nome do produto</label><select><option>Esconder</option><option>Mostrar</option></select></div>
+            <div style="margin-top:14px;font-size:12px;color:#6b7280;margin-bottom:6px">Prévia de notificação</div>
+            <div style="background:#1a1e2e;border:1px solid #2d3348;border-radius:8px;padding:10px;display:flex;align-items:center;gap:8px">
+              <div class="logo-icon" style="width:24px;height:24px"><i class="ti ti-radar-2" style="font-size:13px"></i></div>
+              <div style="font-size:12px;color:#e2e8f0;font-weight:500">Venda aprovada!</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-hd"><div class="card-ttl"><i class="ti ti-report"></i> Notificações de relatório</div></div>
+            <div style="font-size:12px;color:#6b7280;margin-bottom:10px">Horários</div>
+            <div id="notif-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== ASSINATURA ===== -->
+      <div class="page" id="page-assinatura">
+        <div class="section-title" style="margin-bottom:14px">Assinatura</div>
+        <div id="plan-info" style="background:#1e2130;border-radius:8px;padding:12px;margin-bottom:14px;font-size:12px;color:#8892a4"></div>
+        <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:14px">
+          <div class="card">
+            <div class="section-title" style="font-size:14px;margin-bottom:12px">Cobrança</div>
+            <div style="font-size:12px;color:#6b7280;margin-bottom:12px" id="plan-desc">—</div>
+            <button class="btn-primary btn-full">Fazer upgrade</button>
+            <div style="margin-top:16px;font-size:13px;font-weight:500;color:#e2e8f0;margin-bottom:8px">Histórico de faturas</div>
+            <div style="font-size:12px;color:#6b7280;margin-bottom:8px">Verifique a situação das suas faturas</div>
+            <button class="btn-upd btn-full">Ver histórico de faturas</button>
+          </div>
+          <div class="card">
+            <div class="section-title" style="font-size:14px;margin-bottom:12px">Detalhamento</div>
+            <div id="plan-details" style="font-size:12px"></div>
+          </div>
+        </div>
+        <div style="margin-top:20px">
+          <div class="section-title" style="font-size:14px;margin-bottom:12px">Planos disponíveis</div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+            <div class="card" style="border:1px solid #2d3348">
+              <div style="font-size:14px;font-weight:500;color:#e2e8f0;margin-bottom:4px">Free</div>
+              <div style="font-size:22px;font-weight:600;color:#7c3aed;margin-bottom:8px">R$0<span style="font-size:12px;color:#6b7280">/mês</span></div>
+              <div style="font-size:11px;color:#6b7280;margin-bottom:12px">1.000 eventos/mês</div>
+              <button class="btn-upd btn-full">Plano atual</button>
+            </div>
+            <div class="card" style="border:2px solid #7c3aed">
+              <div style="font-size:10px;background:#7c3aed;color:#fff;padding:2px 8px;border-radius:20px;display:inline-block;margin-bottom:6px">MAIS POPULAR</div>
+              <div style="font-size:14px;font-weight:500;color:#e2e8f0;margin-bottom:4px">Pro</div>
+              <div style="font-size:22px;font-weight:600;color:#7c3aed;margin-bottom:8px">R$97<span style="font-size:12px;color:#6b7280">/mês</span></div>
+              <div style="font-size:11px;color:#6b7280;margin-bottom:12px">100.000 eventos/mês</div>
+              <button class="btn-primary btn-full">Assinar</button>
+            </div>
+            <div class="card" style="border:1px solid #2d3348">
+              <div style="font-size:14px;font-weight:500;color:#e2e8f0;margin-bottom:4px">Scale</div>
+              <div style="font-size:22px;font-weight:600;color:#7c3aed;margin-bottom:8px">R$197<span style="font-size:12px;color:#6b7280">/mês</span></div>
+              <div style="font-size:11px;color:#6b7280;margin-bottom:12px">Eventos ilimitados</div>
+              <button class="btn-primary btn-full">Assinar</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== CONTA ===== -->
+      <div class="page" id="page-conta">
+        <div class="section-title" style="margin-bottom:14px">Minha conta</div>
+        <div class="card" style="max-width:480px">
+          <div class="card-hd"><div class="card-ttl"><i class="ti ti-user"></i> Dados pessoais</div></div>
+          <div class="form-group"><label>Nome</label><input id="acc-name" placeholder="Seu nome"></div>
+          <div class="form-group"><label>Email</label><input id="acc-email" type="email" placeholder="seu@email.com" readonly style="opacity:.6"></div>
+          <div class="form-group"><label>Nova senha</label><input id="acc-password" type="password" placeholder="••••••••"></div>
+          <button class="btn-primary" onclick="saveAccount()"><i class="ti ti-check"></i> Salvar alterações</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- MODAL WEBHOOK -->
+<div id="modal-webhook" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center">
+  <div style="background:#13151f;border:1px solid #2d3348;border-radius:12px;padding:24px;width:480px;max-width:90vw">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <div style="font-size:14px;font-weight:500;color:#fff" id="modal-title">Integração</div>
+      <button onclick="document.getElementById('modal-webhook').style.display='none'" style="background:none;border:none;color:#6b7280;font-size:20px;cursor:pointer">&times;</button>
+    </div>
+    <div style="font-size:12px;color:#6b7280;margin-bottom:12px">Cole esta URL como webhook na sua plataforma de vendas:</div>
+    <div id="modal-url" style="background:#1a1e2e;border:1px solid #2d3348;border-radius:6px;padding:10px;font-size:11px;color:#a78bfa;word-break:break-all;margin-bottom:12px"></div>
+    <button class="btn-primary btn-full" onclick="copyModalUrl()"><i class="ti ti-copy"></i> Copiar URL do webhook</button>
+  </div>
+</div>
+
+<script src="js/app.js"></script>
+</body>
+</html>
