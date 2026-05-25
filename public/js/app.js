@@ -245,8 +245,8 @@ async function loadPlatform(platform) {
       const conv_cost = (c.conversas || 0) > 0 ? (c.spent || 0) / c.conversas : 0;
       const ic = c.sales_count > 0 ? (c.revenue || 0) / c.sales_count : 0;
       return `<tr>
-        <td>${statusBadge(c.status)}</td>
-        <td><div class="cn">${c.name}</div><div class="cd">${new Date(c.created_at).toLocaleDateString('pt-BR')}</div></td>
+        <td class="col-fixed" style="min-width:70px">${statusBadge(c.status)}</td>
+        <td class="col-fixed" style="min-width:160px;left:70px"><div class="cn">${c.name}</div><div class="cd">${new Date(c.created_at).toLocaleDateString('pt-BR')}</div></td>
         <td>${R(c.budget || 0)}</td>
         <td>${Num(c.conversas || 0)}</td>
         <td class="${conv_cost > 0 && conv_cost < 20 ? 'rg' : conv_cost > 0 ? 'rl' : ''}">${conv_cost > 0 ? R(conv_cost) : 'N/A'}</td>
