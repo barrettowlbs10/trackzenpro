@@ -781,15 +781,15 @@ async function resetUserEvents(userId) {
 }
 
 // Mostrar/esconder admin na sidebar baseado no papel do usuário
-async function checkAdminAccess() {
-  try {
-    const r = await fetch(`${API}/admin/stats`, { headers: headers() });
+function checkAdminAccess() {
+  // Mostrar admin para o dono da plataforma
+  if (!USER) return;
+  const adminEmails = ['demo@trackzenpro.com'];
+  if (adminEmails.includes(USER.email) || USER.role === 'admin') {
     const nav = document.getElementById('nav-admin');
-    if (r.ok && nav) {
+    if (nav) {
+      nav.removeAttribute('style');
       nav.style.display = 'flex';
-      nav.style.setProperty('display', 'flex', 'important');
     }
-  } catch(e) {
-    console.log('Admin check:', e);
   }
 }
