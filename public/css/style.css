@@ -162,9 +162,27 @@ tr:hover .col-fixed{background:#1a1e2e}
 ::-webkit-scrollbar-track{background:#0f1117}
 ::-webkit-scrollbar-thumb{background:#2d3348;border-radius:3px}
 
-/* Tabela de plataforma com scroll */
-.platform-table-wrap{overflow-x:scroll !important;display:block;width:100%;border-radius:9px;border:1px solid #1e2130;}
-.platform-table-wrap table{min-width:1800px;width:max-content;}
-.platform-table-wrap th{background:#13151f;position:sticky;top:0;z-index:1;white-space:nowrap;}
-.platform-table-wrap td{white-space:nowrap;}
+
+
+.platform-table-wrap table{min-width:2000px;border-collapse:collapse;}
+.platform-table-wrap thead th{background:#0f1117;position:sticky;top:0;z-index:3;white-space:nowrap;padding:8px 10px;border-bottom:2px solid #2d3348;color:#6b7280;font-size:10px;font-weight:500;}
+.platform-table-wrap td{white-space:nowrap;padding:8px 10px;border-bottom:1px solid #131823;color:#c4cad8;}
 .platform-table-wrap tr:hover td{background:#1a1e2e;}
+.platform-table-wrap .col-fixed-1{position:sticky;left:0;z-index:2;background:#13151f;}
+.platform-table-wrap .col-fixed-2{position:sticky;left:80px;z-index:2;background:#13151f;}
+.platform-table-wrap tr:hover .col-fixed-1,
+.platform-table-wrap tr:hover .col-fixed-2{background:#1a1e2e;}
+.platform-table-wrap thead th:nth-child(1){left:0;z-index:4;position:sticky;}
+.platform-table-wrap thead th:nth-child(2){left:80px;z-index:4;position:sticky;}
+.platform-table-wrap .tr-total td{background:#1a1e2e;font-weight:600;color:#e2e8f0;border-top:2px solid #2d3348;position:sticky;bottom:0;}
+
+/* ===== TABELA PLATAFORMA ESTILO UTMIFY ===== */
+.platform-table-wrap{width:100%;overflow-x:auto;border-radius:9px;border:1px solid #1e2130;display:block;}
+.platform-table-wrap::-webkit-scrollbar{height:4px;}
+.platform-table-wrap::-webkit-scrollbar-thumb{background:#2d3348;border-radius:2px;}
+.platform-table-wrap table{border-collapse:collapse;white-space:nowrap;font-size:11px;width:100%;}
+.platform-table-wrap thead tr{background:#13151f;border-bottom:1px solid #1e2130;}
+.platform-table-wrap thead th{padding:6px 10px;color:#4a5568;font-weight:500;font-size:10px;letter-spacing:.04em;text-align:left;white-space:nowrap;}
+.platform-table-wrap tbody td{padding:7px 10px;border-bottom:1px solid #131823;color:#c4cad8;font-size:11px;}
+.platform-table-wrap tbody tr:hover td{background:#1a1e2e;}
+.platform-table-wrap .tr-total td{background:#1a1e2e;font-weight:600;color:#e2e8f0;border-top:1px solid #2d3348;font-size:11px;}

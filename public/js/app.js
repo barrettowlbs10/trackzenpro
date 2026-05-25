@@ -242,6 +242,37 @@ async function loadPlatform(platform) {
     const total_budget = camps.reduce((s, c) => s + (c.budget || 0), 0);
     const total_conv = camps.reduce((s, c) => s + (c.conversas || 0), 0);
 
+    // Atualizar cabeçalho da tabela com ícones info
+    const tableEl = tbody.closest('table');
+    if (tableEl) {
+      const thead = tableEl.querySelector('thead tr');
+      if (thead) {
+        thead.innerHTML = `
+          <th><input type="checkbox" style="width:13px;height:13px;accent-color:#7c3aed"></th>
+          <th>STATUS</th>
+          <th>CAMPANHA</th>
+          <th>ORÇAMENTO</th>
+          <th>CONVERSAS <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>CUSTO / CONVERSA <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>VENDAS</th>
+          <th>CPA <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>GASTOS</th>
+          <th>FATURAMENTO <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>LUCRO <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>ROAS <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>MARGEM <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>ROI <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>IC <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>CPI <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>CPC <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>CTR <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>CPM <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>IMPRESSÕES</th>
+          <th>CLIQUES</th>
+        `;
+      }
+    }
+
     tbody.innerHTML = camps.map(c => {
       const profit = (c.revenue || 0) - (c.spent || 0);
       const margin = (c.revenue || 0) > 0 ? (profit / (c.revenue || 1)) * 100 : 0;
@@ -276,7 +307,8 @@ async function loadPlatform(platform) {
       </tr>`;
     }).join('') + `
     <tr class="tr-total">
-      <td colspan="2" style="font-weight:600;color:#e2e8f0">${camps.length} CAMPANHAS</td>
+      <td></td><td></td>
+      <td style="font-weight:600;color:#e2e8f0">${camps.length} CAMPANHAS</td>
       <td>${R(total_budget)}</td>
       <td>${Num(total_conv)}</td>
       <td>—</td>
