@@ -1,839 +1,834 @@
-const express = require('express');
-const cors = require('cors');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const { v4: uuidv4 } = require('uuid');
-const path = require('path');
-const fs = require('fs');
-const https = require('https');
+const API = window.location.origin + '/api';
+let TOKEN = localStorage.getItem('tztoken');
+let USER = JSON.parse(localStorage.getItem('tzuser') || 'null');
+let charts = {};
 
-const app = express();
-const PORT = 3000;
-const JWT_SECRET = 'trackzenpro-secret-2024';
-const DB_PATH = path.join(__dirname, 'data/db.json');
+function headers() { return { 'Content-Type': 'application/json', 'Authorization': `Bearer ${TOKEN}` }; }
 
-// ===== BANCO DE DADOS =====
-function loadDB() {
-  if (!fs.existsSync(DB_PATH)) return { users:[], sales:[], campaigns:[], pixels:[], rules:[], utms:[], notifications:[], events_log:[] };
-  try { return JSON.parse(fs.readFileSync(DB_PATH,'utf8')); }
-  catch { return { users:[], sales:[], campaigns:[], pixels:[], rules:[], utms:[], notifications:[], events_log:[] }; }
-}
-function saveDB(data) {
-  fs.mkdirSync(path.dirname(DB_PATH),{recursive:true});
-  fs.writeFileSync(DB_PATH, JSON.stringify(data,null,2));
-}
-
-// ===== META CAPI =====
-async function fireMetaCAPI(pixel, saleData) {
-  if (!pixel || !pixel.access_token || !pixel.pixel_id) return { success: false, error: 'Pixel ou token não configurado' };
+async function doLogin() {
+  const email = document.getElementById('login-email').value;
+  const password = document.getElementById('login-password').value;
+  const err = document.getElementById('login-error');
   try {
-    const eventId = uuidv4();
-    const payload = {
-      data: [{
-        event_name: 'Purchase',
-        event_time: Math.floor(Date.now() / 1000),
-        event_id: eventId,
-        action_source: 'website',
-        user_data: {
-          em: saleData.email ? hashData(saleData.email) : undefined,
-          ph: saleData.phone ? hashData(saleData.phone) : undefined,
-          client_ip_address: saleData.ip || '127.0.0.1',
-          client_user_agent: saleData.user_agent || 'TrackZenPro/1.0',
-          fbc: saleData.fbc || undefined,
-          fbp: saleData.fbp || undefined,
-        },
-        custom_data: {
-          currency: 'BRL',
-          value: parseFloat(saleData.value || 0),
-          content_name: saleData.product || 'Produto',
-          content_type: 'product',
-          order_id: saleData.id || eventId,
-        },
-        event_source_url: saleData.source_url || 'https://seusite.com',
-      }],
-      test_event_code: pixel.test_code || undefined,
-    };
-
-    const postData = JSON.stringify(payload);
-    const options = {
-      hostname: 'graph.facebook.com',
-      path: `/v18.0/${pixel.pixel_id}/events?access_token=${pixel.access_token}`,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) },
-    };
-
-    return await new Promise((resolve) => {
-      const req = https.request(options, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try {
-            const parsed = JSON.parse(data);
-            resolve({ success: !parsed.error, response: parsed, event_id: eventId });
-          } catch { resolve({ success: false, error: 'Resposta inválida da Meta' }); }
-        });
-      });
-      req.on('error', e => resolve({ success: false, error: e.message }));
-      req.write(postData);
-      req.end();
-    });
-  } catch(e) { return { success: false, error: e.message }; }
+    const r = await fetch(`${API}/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
+    const d = await r.json();
+    if (!r.ok) { err.textContent = d.error; err.style.display = 'block'; return; }
+    TOKEN = d.token; USER = d.user;
+    localStorage.setItem('tztoken', TOKEN);
+    localStorage.setItem('tzuser', JSON.stringify(USER));
+    startApp();
+  } catch { err.textContent = 'Servidor offline. Rode: npm start'; err.style.display = 'block'; }
 }
 
-// ===== TIKTOK EVENTS API =====
-async function fireTikTokAPI(pixel, saleData) {
-  if (!pixel || !pixel.access_token || !pixel.pixel_id) return { success: false, error: 'Pixel ou token não configurado' };
+async function doRegister() {
+  const name = document.getElementById('reg-name').value;
+  const email = document.getElementById('reg-email').value;
+  const password = document.getElementById('reg-password').value;
+  const err = document.getElementById('reg-error');
   try {
-    const eventId = uuidv4();
-    const payload = {
-      pixel_code: pixel.pixel_id,
-      event: 'CompletePayment',
-      event_id: eventId,
-      timestamp: new Date().toISOString(),
-      context: {
-        user_agent: saleData.user_agent || 'TrackZenPro/1.0',
-        ip: saleData.ip || '127.0.0.1',
-        page: { url: saleData.source_url || 'https://seusite.com' },
-        user: {
-          email: saleData.email ? hashData(saleData.email) : undefined,
-          phone_number: saleData.phone ? hashData(saleData.phone) : undefined,
-        },
-      },
-      properties: {
-        currency: 'BRL',
-        value: parseFloat(saleData.value || 0),
-        content_type: 'product',
-        contents: [{ content_id: saleData.product_id || '001', content_name: saleData.product || 'Produto', quantity: 1, price: parseFloat(saleData.value || 0) }],
-        order_id: saleData.id || eventId,
-      },
-    };
-
-    const postData = JSON.stringify({ event_source: 'web', data: [payload] });
-    const options = {
-      hostname: 'business-api.tiktok.com',
-      path: '/open_api/v1.3/event/track/',
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Access-Token': pixel.access_token, 'Content-Length': Buffer.byteLength(postData) },
-    };
-
-    return await new Promise((resolve) => {
-      const req = https.request(options, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try {
-            const parsed = JSON.parse(data);
-            resolve({ success: parsed.code === 0, response: parsed, event_id: eventId });
-          } catch { resolve({ success: false, error: 'Resposta inválida do TikTok' }); }
-        });
-      });
-      req.on('error', e => resolve({ success: false, error: e.message }));
-      req.write(postData);
-      req.end();
-    });
-  } catch(e) { return { success: false, error: e.message }; }
+    const r = await fetch(`${API}/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, email, password }) });
+    const d = await r.json();
+    if (!r.ok) { err.textContent = d.error; err.style.display = 'block'; return; }
+    TOKEN = d.token; USER = d.user;
+    localStorage.setItem('tztoken', TOKEN);
+    localStorage.setItem('tzuser', JSON.stringify(USER));
+    startApp();
+  } catch { err.textContent = 'Erro ao conectar ao servidor'; err.style.display = 'block'; }
 }
 
+function showRegister() { document.getElementById('login-screen').style.display = 'none'; document.getElementById('register-screen').style.display = 'flex'; }
+function showLogin() { document.getElementById('register-screen').style.display = 'none'; document.getElementById('login-screen').style.display = 'flex'; }
 
-// ===== META ADS API - PUXAR DADOS REAIS =====
-async function fetchMetaAdData(accessToken, adAccountId) {
-  try {
-    const fields = 'campaign_name,impressions,clicks,spend,cpm,cpc,ctr,reach,frequency,actions,cost_per_action_type';
-    const datePreset = 'today';
-    const url = `https://graph.facebook.com/v18.0/${adAccountId}/insights?fields=${fields}&date_preset=${datePreset}&level=campaign&access_token=${accessToken}`;
-    
-    return await new Promise((resolve) => {
-      const options = {
-        hostname: 'graph.facebook.com',
-        path: `/v18.0/${adAccountId}/insights?fields=${fields}&date_preset=${datePreset}&level=campaign&access_token=${accessToken}`,
-        method: 'GET',
-      };
-      const req = https.request(options, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed.error) resolve({ success: false, error: parsed.error.message });
-            else resolve({ success: true, data: parsed.data || [] });
-          } catch { resolve({ success: false, error: 'Resposta inválida' }); }
-        });
-      });
-      req.on('error', e => resolve({ success: false, error: e.message }));
-      req.end();
-    });
-  } catch(e) { return { success: false, error: e.message }; }
+function logout() {
+  localStorage.removeItem('tztoken'); localStorage.removeItem('tzuser');
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('login-screen').style.display = 'flex';
+  TOKEN = null; USER = null;
 }
 
-async function fetchMetaCampaigns(accessToken, adAccountId) {
-  try {
-    const fields = 'id,name,status,budget_remaining,daily_budget,lifetime_budget,objective';
-    return await new Promise((resolve) => {
-      const options = {
-        hostname: 'graph.facebook.com',
-        path: `/v18.0/${adAccountId}/campaigns?fields=${fields}&access_token=${accessToken}`,
-        method: 'GET',
-      };
-      const req = https.request(options, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed.error) resolve({ success: false, error: parsed.error.message });
-            else resolve({ success: true, data: parsed.data || [] });
-          } catch { resolve({ success: false, error: 'Resposta inválida' }); }
-        });
-      });
-      req.on('error', e => resolve({ success: false, error: e.message }));
-      req.end();
-    });
-  } catch(e) { return { success: false, error: e.message }; }
-}
-
-function hashData(data) {
-  const crypto = require('crypto');
-  return crypto.createHash('sha256').update(data.trim().toLowerCase()).digest('hex');
-}
-
-// ===== LOG DE EVENTOS =====
-function logEvent(db, userId, platform, pixelId, eventType, saleId, result) {
-  if (!db.events_log) db.events_log = [];
-  db.events_log.unshift({
-    id: uuidv4(), user_id: userId, platform, pixel_id: pixelId,
-    event_type: eventType, sale_id: saleId,
-    success: result.success, response: JSON.stringify(result.response || result.error || ''),
-    created_at: new Date().toISOString()
-  });
-  if (db.events_log.length > 500) db.events_log = db.events_log.slice(0, 500);
-}
-
-// ===== SEED DEMO =====
-function seedDemo() {
-  const db = loadDB();
-  if (!db.events_log) { db.events_log = []; saveDB(db); }
-  if (db.users.find(u => u.email === 'demo@trackzenpro.com')) return;
-  const userId = 'demo-user-001';
-  db.users.push({ id:userId, name:'Usuário Demo', email:'demo@trackzenpro.com', password:bcrypt.hashSync('demo123',10), plan:'pro', role:'admin', events_used:78500, events_limit:100000, created_at:new Date().toISOString() });
-  const camps = [
-    {id:'c1',name:'ABO - Escala 03',platform:'meta',status:'active',budget:5000,spent:4200,impressions:48000,clicks:4385},
-    {id:'c2',name:'CBO - Conversão',platform:'meta',status:'active',budget:3000,spent:2100,impressions:31200,clicks:2979},
-    {id:'c3',name:'UGC - TikTok VSL 01',platform:'tiktok',status:'active',budget:3000,spent:2100,impressions:52000,clicks:1840},
-    {id:'c4',name:'Remarketing - 7d',platform:'meta',status:'active',budget:2000,spent:980,impressions:14500,clicks:1245},
-    {id:'c5',name:'ABO - Teste Criativo',platform:'meta',status:'paused',budget:1500,spent:680,impressions:9800,clicks:980},
-    {id:'c6',name:'Top of Funnel BR',platform:'tiktok',status:'active',budget:2000,spent:1100,impressions:28000,clicks:2200},
-    {id:'c7',name:'Google - Pesquisa BR',platform:'google',status:'active',budget:1500,spent:760,impressions:8200,clicks:512},
-    {id:'c8',name:'Google - Display',platform:'google',status:'active',budget:800,spent:340,impressions:15600,clicks:1200},
-  ];
-  camps.forEach(c => db.campaigns.push({...c,user_id:userId,created_at:new Date().toISOString()}));
-  const sources=['facebook','instagram','tiktok','google','direct'];
-  const methods=['pix','card','boleto','pix','pix'];
-  const values=[97,147,197,97,97,247];
-  for(let i=0;i<80;i++){
-    const d=new Date(); d.setMinutes(d.getMinutes()-i*18);
-    const camp=camps[Math.floor(Math.random()*camps.length)];
-    db.sales.push({id:uuidv4(),user_id:userId,platform:camp.platform,campaign:camp.name,utm_source:sources[Math.floor(Math.random()*sources.length)],utm_medium:'cpc',utm_campaign:camp.name,value:values[Math.floor(Math.random()*values.length)],status:Math.random()>0.05?'approved':'refunded',payment_method:methods[Math.floor(Math.random()*methods.length)],product:'Produto Principal',created_at:d.toISOString()});
+function startApp() {
+  document.getElementById('login-screen').style.display = 'none';
+  document.getElementById('register-screen').style.display = 'none';
+  document.getElementById('app').style.display = 'flex';
+  document.getElementById('top-date').textContent = new Date().toLocaleDateString('pt-BR');
+  if (USER) {
+    document.getElementById('user-name').textContent = USER.name;
+    document.getElementById('user-av').textContent = USER.name.charAt(0).toUpperCase();
+    const wh = document.getElementById('webhook-url');
+    if (wh) wh.textContent = `${window.location.origin}/api/webhook/${USER.id}`;
   }
-  db.pixels.push({id:'px1',user_id:userId,platform:'meta',pixel_id:'',access_token:'',status:'inactive',events_today:0,match_rate:0,quality_score:0,test_code:'',created_at:new Date().toISOString()});
-  db.pixels.push({id:'px2',user_id:userId,platform:'tiktok',pixel_id:'',access_token:'',status:'inactive',events_today:0,match_rate:0,quality_score:0,created_at:new Date().toISOString()});
-  db.rules.push({id:'r1',user_id:userId,name:'AUMENTA ORÇAMENTO 50% CPA 6,50',platform:'meta',condition_metric:'cpa',condition_operator:'lt',condition_value:6.50,action:'increase_budget',action_value:50,frequency:'3h',status:1,created_at:new Date().toISOString()});
-  db.rules.push({id:'r2',user_id:userId,name:'DESATIVAR ANUNCIO CPA 10,50',platform:'meta',condition_metric:'cpa',condition_operator:'gt',condition_value:10.50,action:'pause_campaign',action_value:0,frequency:'2h',status:1,created_at:new Date().toISOString()});
-  db.rules.push({id:'r3',user_id:userId,name:'GASTOU 9 REAIS NAO VENDEU DESLIGA',platform:'meta',condition_metric:'spent_no_sale',condition_operator:'gt',condition_value:9.00,action:'pause_campaign',action_value:0,frequency:'2h',status:0,created_at:new Date().toISOString()});
-  db.utms.push({id:'u1',user_id:userId,url:'https://seusite.com/produto',utm_source:'facebook',utm_medium:'cpc',utm_campaign:'abo-escala-03',utm_content:'',full_url:'https://seusite.com/produto?utm_source=facebook&utm_medium=cpc&utm_campaign=abo-escala-03',clicks:4385,conversions:72,created_at:new Date().toISOString()});
-  db.utms.push({id:'u2',user_id:userId,url:'https://seusite.com/produto',utm_source:'tiktok',utm_medium:'paid',utm_campaign:'ugc-vsl-01',utm_content:'',full_url:'https://seusite.com/produto?utm_source=tiktok&utm_medium=paid&utm_campaign=ugc-vsl-01',clicks:1840,conversions:38,created_at:new Date().toISOString()});
-  db.notifications.push({id:'n1',user_id:userId,title:'Venda aprovada — R$197,00',message:'Google Ads · Campanha Pesquisa BR',type:'success',read:0,created_at:new Date().toISOString()});
-  db.notifications.push({id:'n2',user_id:userId,title:'ROAS abaixo de 3x detectado',message:'TikTok · Top of Funnel BR',type:'warning',read:0,created_at:new Date().toISOString()});
-  db.notifications.push({id:'n3',user_id:userId,title:'Campanha pausada automaticamente',message:'Meta · ABO Teste Criativo · ROAS 2,31x',type:'danger',read:0,created_at:new Date().toISOString()});
-  saveDB(db);
-  console.log('✅ Dados demo criados!');
+  loadSummary('today');
+  loadUserInfo();
+  checkAdminAccess();
+  setTimeout(requestPushPermission, 2000);
 }
 
-seedDemo();
-app.use(cors());
-app.use(express.json());
-app.use(express.static(path.join(__dirname,'public')));
+window.onload = () => { if (TOKEN && USER) startApp(); };
 
+const pageTitles = {
+  resumo: ['Dashboard — Resumo', 'Visão geral de todas as plataformas'],
+  meta: ['Meta Ads', 'Campanhas do Facebook e Instagram'],
+  tiktok: ['TikTok Ads', 'Campanhas do TikTok'],
+  google: ['Google Ads', 'Campanhas do Google'],
+  kwai: ['Kwai Ads', 'Campanhas do Kwai'],
+  utms: ['UTMs', 'Relatório e criação de links de rastreamento'],
+  integracoes: ['Integrações', 'Conecte suas plataformas de vendas e anúncios'],
+  pixels: ['Pixels', 'Gerencie seus pixels de rastreamento'],
+  regras: ['Regras automáticas', 'Automatize suas campanhas com condições'],
+  relatorios: ['Relatórios', 'Relatórios diários de performance'],
+  notificacoes: ['Notificações', 'Configure seus alertas de venda'],
+  assinatura: ['Assinatura', 'Gerencie seu plano e cobrança'],
+  conta: ['Minha conta', 'Dados pessoais e configurações'],
+  admin: ['Painel Admin', 'Gerencie usuários e planos da plataforma'],
+};
 
-// ===== SEGURANÇA E MULTI-USUÁRIO =====
-
-// Rate limiting simples
-const requestCounts = {};
-function rateLimit(req, res, next) {
-  const ip = req.ip || req.connection.remoteAddress;
-  const now = Date.now();
-  if (!requestCounts[ip]) requestCounts[ip] = { count: 0, resetAt: now + 60000 };
-  if (now > requestCounts[ip].resetAt) { requestCounts[ip] = { count: 0, resetAt: now + 60000 }; }
-  requestCounts[ip].count++;
-  if (requestCounts[ip].count > 100) return res.status(429).json({ error: 'Muitas requisições. Tente em 1 minuto.' });
-  next();
-}
-app.use('/api', rateLimit);
-
-// Verificar limite de eventos do plano
-function checkEventLimit(req, res, next) {
-  const db = loadDB();
-  const user = db.users.find(u => u.id === req.user?.id);
-  if (!user) return next();
-  const limits = { free: 1000, pro: 100000, scale: Infinity };
-  const limit = limits[user.plan] || 1000;
-  if ((user.events_used || 0) >= limit) {
-    return res.status(403).json({ 
-      error: 'Limite de eventos atingido', 
-      code: 'EVENT_LIMIT_REACHED',
-      plan: user.plan,
-      used: user.events_used,
-      limit 
-    });
+function navigate(id, el) {
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  if (el) el.classList.add('active');
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  const pg = document.getElementById('page-' + id);
+  if (pg) pg.classList.add('active');
+  if (pageTitles[id]) {
+    document.getElementById('pg-title').textContent = pageTitles[id][0];
+    document.getElementById('pg-sub').textContent = pageTitles[id][1];
   }
-  next();
+  if (['meta','tiktok','google','kwai'].includes(id)) loadPlatform(id);
+  if (id === 'relatorios') loadReports();
+  if (id === 'regras') loadRules();
+  if (id === 'pixels') loadPixels();
+  if (id === 'utms') loadUtms();
+  if (id === 'notificacoes') loadNotifications();
+  if (id === 'assinatura') loadSubscription();
+  if (id === 'conta') loadAccount();
+  if (id === 'admin') loadAdmin();
 }
 
-// Verificar acesso a features por plano
-function checkPlan(requiredPlan) {
-  return (req, res, next) => {
-    const db = loadDB();
-    const user = db.users.find(u => u.id === req.user?.id);
-    if (!user) return res.status(401).json({ error: 'Não autorizado' });
-    const planLevels = { free: 0, pro: 1, scale: 2 };
-    const userLevel = planLevels[user.plan] || 0;
-    const requiredLevel = planLevels[requiredPlan] || 0;
-    if (userLevel < requiredLevel) {
-      return res.status(403).json({ error: `Recurso disponível apenas no plano ${requiredPlan}`, code: 'UPGRADE_REQUIRED', requiredPlan });
-    }
-    next();
-  };
+function refreshPage() {
+  const active = document.querySelector('.nav-item.active');
+  if (active) active.click(); else loadSummary('today');
 }
 
-function auth(req,res,next){
-  const token=req.headers.authorization?.split(' ')[1];
-  if(!token) return res.status(401).json({error:'Não autorizado'});
-  try{req.user=jwt.verify(token,JWT_SECRET);next();}
-  catch{res.status(401).json({error:'Token inválido'});}
+function switchTab(platform, tab, el) {
+  const bar = document.getElementById('tabs-' + platform);
+  if (bar) bar.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  if (el) el.classList.add('active');
 }
 
-// ===== AUTH =====
-app.post('/api/login',(req,res)=>{
-  const{email,password}=req.body; const db=loadDB();
-  const user=db.users.find(u=>u.email===email);
-  if(!user||!bcrypt.compareSync(password,user.password)) return res.status(401).json({error:'Email ou senha incorretos'});
-  const token=jwt.sign({id:user.id,email:user.email,name:user.name},JWT_SECRET,{expiresIn:'7d'});
-  res.json({token,user:{id:user.id,name:user.name,email:user.email,plan:user.plan}});
-});
+const R = v => v != null ? `R$ ${parseFloat(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/A';
+const Pct = v => v != null && !isNaN(v) ? `${parseFloat(v).toFixed(1)}%` : 'N/A';
+const Rx = v => v != null && !isNaN(v) && v > 0 ? `${parseFloat(v).toFixed(2)}x` : 'N/A';
+const Num = v => v != null ? parseInt(v).toLocaleString('pt-BR') : '0';
+const NA = v => (v == null || v === '' || isNaN(v) || v === 0) ? 'N/A' : v;
 
-app.post('/api/register',(req,res)=>{
-  const{name,email,password}=req.body;
-  if(!name||!email||!password) return res.status(400).json({error:'Preencha todos os campos'});
-  const db=loadDB();
-  if(db.users.find(u=>u.email===email)) return res.status(400).json({error:'Email já cadastrado'});
-  const id=uuidv4();
-  db.users.push({id,name,email,password:bcrypt.hashSync(password,10),plan:'free',events_used:0,events_limit:1000,created_at:new Date().toISOString()});
-  saveDB(db);
-  const token=jwt.sign({id,email,name},JWT_SECRET,{expiresIn:'7d'});
-  res.json({token,user:{id,name,email,plan:'free'}});
-});
+function statusBadge(s) {
+  if (s === 'active') return '<span class="b-ok">Ativa</span>';
+  if (s === 'paused') return '<span class="b-pause">Pausada</span>';
+  return '<span class="b-stop">Inativa</span>';
+}
 
-// ===== DASHBOARD =====
-app.get('/api/dashboard/summary',auth,(req,res)=>{
-  const db=loadDB(); const uid=req.user.id;
-  const today=new Date(); today.setHours(0,0,0,0);
-  const sales=db.sales.filter(s=>s.user_id===uid&&s.status==='approved'&&new Date(s.created_at)>=today);
-  const revenue=sales.reduce((s,v)=>s+v.value,0);
-  const count=sales.length; const ticket=count>0?revenue/count:0;
-  const totalSpent=db.campaigns.filter(c=>c.user_id===uid).reduce((s,c)=>s+(c.spent||0),0);
-  const roas=totalSpent>0?revenue/totalSpent:0; const cpa=count>0?totalSpent/count:0;
-  const bySource={}; sales.forEach(s=>{const k=s.utm_source||'direct';bySource[k]=(bySource[k]||0)+s.value;});
-  const hourly=Array(24).fill(0); sales.forEach(s=>{const h=new Date(s.created_at).getHours();hourly[h]+=s.value;});
-  const recent=db.sales.filter(s=>s.user_id===uid).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)).slice(0,10);
-  const unreadNotifs=db.notifications.filter(n=>n.user_id===uid&&!n.read).length;
-  res.json({revenue,count,ticket,roas,cpa,spent:totalSpent,bySource,hourly,recent,unreadNotifs});
-});
+function roasClass(v) { return parseFloat(v) >= 3 ? 'rg' : parseFloat(v) >= 2 ? '' : 'rl'; }
 
-// ===== CAMPAIGNS =====
-app.get('/api/campaigns',auth,(req,res)=>{
-  const db=loadDB(); const{platform}=req.query;
-  let camps=db.campaigns.filter(c=>c.user_id===req.user.id);
-  if(platform&&platform!=='all') camps=camps.filter(c=>c.platform===platform);
-  const result=camps.map(c=>{
-    const sales=db.sales.filter(s=>s.user_id===req.user.id&&s.campaign===c.name&&s.status==='approved');
-    const revenue=sales.reduce((s,v)=>s+v.value,0); const count=sales.length;
-    const roas=(c.spent||0)>0?revenue/c.spent:0; const cpa=count>0?c.spent/count:0;
-    return{...c,revenue,sales_count:count,roas,cpa};
+function mkChart(id, type, labels, datasets, opts = {}) {
+  if (charts[id]) { charts[id].destroy(); }
+  const ctx = document.getElementById(id);
+  if (!ctx) return;
+  charts[id] = new Chart(ctx, {
+    type, data: { labels, datasets },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, ...opts }
   });
-  res.json(result);
-});
+}
 
-app.post('/api/campaigns',auth,(req,res)=>{
-  const db=loadDB(); const{name,platform,budget}=req.body;
-  const camp={id:uuidv4(),user_id:req.user.id,name,platform,status:'active',budget:budget||0,spent:0,impressions:0,clicks:0,created_at:new Date().toISOString()};
-  db.campaigns.push(camp); saveDB(db); res.json({success:true,id:camp.id});
-});
+// ===== SUMMARY =====
+async function loadSummary(period = 'today') {
+  try {
+    const r = await fetch(`${API}/dashboard/summary?period=${period}`, { headers: headers() });
+    const d = await r.json();
+    const kpis = [
+      { lbl: 'Faturamento', val: R(d.revenue), delta: '+18,6%', up: true, ico: 'ti-currency-dollar', bg: '#14532d', ic: '#4ade80' },
+      { lbl: 'Vendas', val: d.count, delta: '+23,4%', up: true, ico: 'ti-shopping-cart', bg: '#1e3a5f', ic: '#60a5fa' },
+      { lbl: 'Ticket médio', val: R(d.ticket), delta: '-3,7%', up: false, ico: 'ti-currency-dollar', bg: '#2e1a4f', ic: '#a78bfa' },
+      { lbl: 'ROAS', val: Rx(d.roas), delta: '+15,3%', up: true, ico: 'ti-target', bg: '#422006', ic: '#fb923c' },
+      { lbl: 'CPA', val: R(d.cpa), delta: '-7,8%', up: false, ico: 'ti-chart-pie', bg: '#3b1f0a', ic: '#fbbf24' },
+    ];
+    document.getElementById('kpi-row').innerHTML = kpis.map(k => `
+      <div class="kpi">
+        <div class="kpi-ico" style="background:${k.bg}"><i class="ti ${k.ico}" style="color:${k.ic}"></i></div>
+        <div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div>
+        <div class="kpi-d ${k.up ? 'up' : 'down'}"><i class="ti ti-trending-${k.up ? 'up' : 'down'}" style="font-size:9px"></i> ${k.delta} vs ontem</div></div>
+      </div>`).join('');
+    const hrs = Array.from({ length: 24 }, (_, i) => i.toString().padStart(2, '0') + ':00');
+    const fatData = d.hourly || Array(24).fill(0);
+    const venData = fatData.map(v => Math.round(v / 97));
+    mkChart('c-fat', 'line', hrs, [{ data: fatData, borderColor: '#7c3aed', backgroundColor: 'rgba(124,58,237,0.1)', borderWidth: 2, tension: 0.4, fill: true, pointRadius: 0 }], { scales: { x: { grid: { display: false }, ticks: { font: { size: 8 }, color: '#4a5568', maxTicksLimit: 8 } }, y: { display: false } } });
+    mkChart('c-ven', 'line', hrs, [{ data: venData, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.08)', borderWidth: 2, tension: 0.4, fill: true, pointRadius: 0 }], { scales: { x: { grid: { display: false }, ticks: { font: { size: 8 }, color: '#4a5568', maxTicksLimit: 8 } }, y: { display: false } } });
+    const src = d.bySource || {};
+    const srcLabels = Object.keys(src);
+    const srcData = Object.values(src);
+    const srcColors = ['#7c3aed', '#22c55e', '#f59e0b', '#3b82f6', '#6b7280', '#ef4444'];
+    mkChart('c-src', 'doughnut', srcLabels, [{ data: srcData, backgroundColor: srcColors.slice(0, srcLabels.length), borderWidth: 0 }], { cutout: '65%' });
+    const total = srcData.reduce((a, b) => a + b, 0);
+    document.getElementById('src-legend').innerHTML = srcLabels.map((l, i) =>
+      `<div style="display:flex;justify-content:space-between;margin-bottom:2px"><span style="display:flex;align-items:center;gap:4px"><span style="width:7px;height:7px;background:${srcColors[i]};border-radius:2px;display:inline-block"></span>${l}</span><span style="color:#c4cad8">${total > 0 ? ((srcData[i] / total) * 100).toFixed(1) : 0}%</span></div>`
+    ).join('');
+    const camps = await fetch(`${API}/campaigns`, { headers: headers() }).then(r => r.json());
+    document.getElementById('camp-count').textContent = camps.filter(c => c.status === 'active').length + ' ativas';
+    document.getElementById('camp-tbody').innerHTML = camps.slice(0, 6).map(c => `
+      <tr>
+        <td><div class="cn">${c.name}</div></td>
+        <td style="color:${c.platform === 'meta' ? '#60a5fa' : c.platform === 'tiktok' ? '#fb923c' : c.platform === 'kwai' ? '#a78bfa' : '#4ade80'}">${c.platform}</td>
+        <td>${statusBadge(c.status)}</td>
+        <td>${c.sales_count || 0}</td>
+        <td>${R(c.revenue)}</td>
+        <td class="${roasClass(c.roas)}">${Rx(c.roas)}</td>
+      </tr>`).join('');
+    document.getElementById('recent-sales').innerHTML = (d.recent || []).slice(0, 6).map(s => `
+      <div class="cv-item">
+        <div style="display:flex;align-items:center;gap:7px">
+          <div class="cv-ico"><i class="ti ti-shopping-cart"></i></div>
+          <div><div style="font-size:11px;color:#e2e8f0">Purchase</div>
+          <div style="font-size:9px;color:#6b7280">${s.platform || 'unknown'} · ${(s.campaign || '').substring(0, 22)}</div></div>
+        </div>
+        <div style="text-align:right"><div class="cv-val">${R(s.value)}</div>
+        <div class="cv-t">${new Date(s.created_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</div></div>
+      </div>`).join('');
+    if (d.unreadNotifs > 0) { const b = document.getElementById('notif-badge'); b.textContent = d.unreadNotifs; b.style.display = 'inline'; }
+  } catch (e) { console.error('Erro summary:', e); }
+}
 
-// ===== SALES =====
-app.get('/api/sales',auth,(req,res)=>{
-  const db=loadDB(); const{period='today',limit=50}=req.query;
-  let since=new Date();
-  if(period==='today') since.setHours(0,0,0,0);
-  else if(period==='7d') since.setDate(since.getDate()-7);
-  else if(period==='30d') since.setDate(since.getDate()-30);
-  res.json(db.sales.filter(s=>s.user_id===req.user.id&&new Date(s.created_at)>=since).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)).slice(0,parseInt(limit)));
-});
+// ===== PLATFORM COM TABELA COMPLETA =====
+async function loadPlatform(platform) {
+  try {
+    let camps;
 
-// ===== WEBHOOK UNIVERSAL =====
-app.post('/api/webhook/:userId', async (req,res)=>{
-  const db=loadDB(); const{userId}=req.params;
-  const user=db.users.find(u=>u.id===userId);
-  if(!user) return res.status(404).json({error:'Usuário não encontrado'});
-
-  const data=req.body;
-  const value=parseFloat(data.value||data.amount||data.price||data.total||0);
-  const status=data.status||data.payment_status||data.situation||'approved';
-  const normalizedStatus = ['approved','completed','paid','complete','aprovado','pago'].includes(status.toLowerCase()) ? 'approved' : status;
-
-  const sale={
-    id:uuidv4(), user_id:userId,
-    platform: data.platform||data.utm_source||'unknown',
-    campaign: data.campaign||data.utm_campaign||'',
-    utm_source: data.utm_source||'',
-    utm_medium: data.utm_medium||'',
-    utm_campaign: data.utm_campaign||'',
-    utm_content: data.utm_content||'',
-    value, status: normalizedStatus,
-    payment_method: data.payment_method||data.payment_type||data.pagamento||'unknown',
-    product: data.product||data.product_name||data.nome_produto||'',
-    email: data.email||data.buyer_email||'',
-    phone: data.phone||data.buyer_phone||'',
-    ip: req.ip||'',
-    user_agent: req.headers['user-agent']||'',
-    raw: JSON.stringify(data),
-    created_at: new Date().toISOString()
-  };
-
-  db.sales.push(sale);
-  if(user) user.events_used=(user.events_used||0)+1;
-
-  // Notificação
-  if(normalizedStatus === 'approved'){
-    db.notifications.unshift({
-      id:uuidv4(), user_id:userId,
-      title:`🛒 Venda aprovada — R$${value.toFixed(2)}`,
-      message:`${sale.product||'Produto'} · via ${sale.utm_source||'webhook'} · ${sale.payment_method}`,
-      type:'success', read:0, created_at:new Date().toISOString()
-    });
-
-    // Disparar para Meta CAPI
-    const metaPixels = db.pixels.filter(p=>p.user_id===userId&&p.platform==='meta'&&p.pixel_id&&p.access_token&&p.status==='active');
-    for(const px of metaPixels){
-      const result = await fireMetaCAPI(px, sale);
-      logEvent(db, userId, 'meta', px.pixel_id, 'Purchase', sale.id, result);
-      if(result.success){
-        px.events_today = (px.events_today||0)+1;
-        console.log(`✅ Meta CAPI disparado — Pixel ${px.pixel_id} — R$${value}`);
+    // Tentar puxar dados reais do Meta se for meta
+    if (platform === 'meta') {
+      const realData = await loadMetaRealData();
+      if (realData && realData.length > 0) {
+        camps = realData;
+        // Mostrar badge de dados reais
+        const badge = document.getElementById('meta-realdata-badge');
+        if (badge) badge.style.display = 'inline';
       } else {
-        console.log(`❌ Meta CAPI erro — ${result.error}`);
+        camps = await fetch(`${API}/campaigns?platform=${platform}`, { headers: headers() }).then(r => r.json());
+        // Mostrar card de configuração se não configurado
+        showMetaSetupIfNeeded();
+      }
+    } else {
+      camps = await fetch(`${API}/campaigns?platform=${platform}`, { headers: headers() }).then(r => r.json());
+    }
+    const total_rev = camps.reduce((s, c) => s + (c.revenue || 0), 0);
+    const total_cnt = camps.reduce((s, c) => s + (c.sales_count || 0), 0);
+    const total_spent = camps.reduce((s, c) => s + (c.spent || 0), 0);
+    const total_imp = camps.reduce((s, c) => s + (c.impressions || 0), 0);
+    const total_clicks = camps.reduce((s, c) => s + (c.clicks || 0), 0);
+    const avg_roas = total_spent > 0 ? total_rev / total_spent : 0;
+    const avg_cpa = total_cnt > 0 ? total_spent / total_cnt : 0;
+    const avg_cpm = total_imp > 0 ? (total_spent / total_imp) * 1000 : 0;
+    const avg_cpc = total_clicks > 0 ? total_spent / total_clicks : 0;
+    const avg_ctr = total_imp > 0 ? (total_clicks / total_imp) * 100 : 0;
+
+    const kpiEl = document.getElementById('kpi-' + platform);
+    if (kpiEl) kpiEl.innerHTML = [
+      { lbl: 'Faturamento', val: R(total_rev), ico: 'ti-currency-dollar', bg: '#14532d', ic: '#4ade80' },
+      { lbl: 'Vendas', val: total_cnt, ico: 'ti-shopping-cart', bg: '#1e3a5f', ic: '#60a5fa' },
+      { lbl: 'ROAS médio', val: Rx(avg_roas), ico: 'ti-target', bg: '#422006', ic: '#fb923c' },
+      { lbl: 'CPA médio', val: R(avg_cpa), ico: 'ti-chart-pie', bg: '#3b1f0a', ic: '#fbbf24' },
+      { lbl: 'Gasto total', val: R(total_spent), ico: 'ti-cash', bg: '#2e1a4f', ic: '#a78bfa' },
+    ].map(k => `
+      <div class="kpi">
+        <div class="kpi-ico" style="background:${k.bg}"><i class="ti ${k.ico}" style="color:${k.ic}"></i></div>
+        <div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div></div>
+      </div>`).join('');
+
+    // Adicionar classe de scroll na tabela
+    const tableWrap = tbody_el => {
+      if (tbody_el) {
+        const wrap = tbody_el.closest('.table-wrap');
+        if (wrap) wrap.className = 'platform-table-wrap';
+      }
+    };
+    const tbody = document.getElementById('tbody-' + platform);
+    if (!tbody) return;
+    tableWrap(tbody);
+
+    if (camps.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="20" style="text-align:center;padding:32px;color:#4a5568"><i class="ti ti-speakerphone" style="font-size:24px;display:block;margin-bottom:8px"></i>Nenhuma campanha cadastrada</td></tr>`;
+      return;
+    }
+
+    // Totais
+    const total_profit = total_rev - total_spent;
+    const total_margin = total_rev > 0 ? (total_profit / total_rev) * 100 : 0;
+    const total_roi = total_spent > 0 ? (total_profit / total_spent) * 100 : 0;
+    const total_budget = camps.reduce((s, c) => s + (c.budget || 0), 0);
+    const total_conv = camps.reduce((s, c) => s + (c.conversas || 0), 0);
+
+    // Atualizar cabeçalho da tabela com ícones info
+    const tableEl = tbody.closest('table');
+    if (tableEl) {
+      const thead = tableEl.querySelector('thead tr');
+      if (thead) {
+        thead.innerHTML = `
+          <th><input type="checkbox" style="width:13px;height:13px;accent-color:#7c3aed"></th>
+          <th>STATUS</th>
+          <th>CAMPANHA</th>
+          <th>ORÇAMENTO</th>
+          <th>CONVERSAS <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>CUSTO / CONVERSA <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>VENDAS</th>
+          <th>CPA <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>GASTOS</th>
+          <th>FATURAMENTO <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>LUCRO <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>ROAS <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>MARGEM <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>ROI <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>IC <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>CPI <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>CPC <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>CTR <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>CPM <i class="ti ti-info-circle" style="font-size:11px;color:#4a5568"></i></th>
+          <th>IMPRESSÕES</th>
+          <th>CLIQUES</th>
+        `;
       }
     }
 
-    // Disparar para TikTok
-    const tiktokPixels = db.pixels.filter(p=>p.user_id===userId&&p.platform==='tiktok'&&p.pixel_id&&p.access_token&&p.status==='active');
-    for(const px of tiktokPixels){
-      const result = await fireTikTokAPI(px, sale);
-      logEvent(db, userId, 'tiktok', px.pixel_id, 'CompletePayment', sale.id, result);
-      if(result.success){
-        px.events_today = (px.events_today||0)+1;
-        console.log(`✅ TikTok API disparado — Pixel ${px.pixel_id} — R$${value}`);
-      } else {
-        console.log(`❌ TikTok API erro — ${result.error}`);
-      }
-    }
-  }
+    setTimeout(() => {
+      const wrap = document.querySelector('.platform-table-wrap');
+      if (wrap) makeColumnsResizable(wrap);
+    }, 100);
 
-  saveDB(db);
-  res.json({success:true, id:sale.id, status:normalizedStatus});
-});
-
-// Testar disparo manual
-app.post('/api/pixels/:id/test', auth, async (req,res)=>{
-  const db=loadDB();
-  const px=db.pixels.find(p=>p.id===req.params.id&&p.user_id===req.user.id);
-  if(!px) return res.status(404).json({error:'Pixel não encontrado'});
-  const testSale={ id:uuidv4(), value:1.00, product:'Teste TrackZen Pro', utm_source:'test', email:'test@test.com' };
-  let result;
-  if(px.platform==='meta') result = await fireMetaCAPI(px, testSale);
-  else if(px.platform==='tiktok') result = await fireTikTokAPI(px, testSale);
-  else result = { success:false, error:'Plataforma não suportada' };
-  logEvent(db, req.user.id, px.platform, px.pixel_id, 'TestEvent', testSale.id, result);
-  saveDB(db);
-  res.json(result);
-});
-
-// ===== PIXELS =====
-app.get('/api/pixels',auth,(req,res)=>{
-  const db=loadDB();
-  res.json(db.pixels.filter(p=>p.user_id===req.user.id));
-});
-
-app.post('/api/pixels',auth,(req,res)=>{
-  const db=loadDB();
-  const{platform,pixel_id,access_token,test_code}=req.body;
-  // Verificar se já existe pixel dessa plataforma
-  const existing=db.pixels.find(p=>p.user_id===req.user.id&&p.platform===platform);
-  if(existing){
-    existing.pixel_id=pixel_id||'';
-    existing.access_token=access_token||'';
-    existing.test_code=test_code||'';
-    existing.status=pixel_id&&access_token?'active':'inactive';
-    existing.updated_at=new Date().toISOString();
-    saveDB(db);
-    return res.json({success:true,id:existing.id,updated:true});
-  }
-  const px={id:uuidv4(),user_id:req.user.id,platform,pixel_id:pixel_id||'',access_token:access_token||'',test_code:test_code||'',status:pixel_id&&access_token?'active':'inactive',events_today:0,match_rate:0,quality_score:0,created_at:new Date().toISOString()};
-  db.pixels.push(px); saveDB(db);
-  res.json({success:true,id:px.id});
-});
-
-app.delete('/api/pixels/:id',auth,(req,res)=>{
-  const db=loadDB();
-  db.pixels=db.pixels.filter(p=>!(p.id===req.params.id&&p.user_id===req.user.id));
-  saveDB(db); res.json({success:true});
-});
-
-// ===== EVENTS LOG =====
-app.get('/api/events-log',auth,(req,res)=>{
-  const db=loadDB();
-  const logs=(db.events_log||[]).filter(e=>e.user_id===req.user.id).slice(0,100);
-  res.json(logs);
-});
-
-// ===== RULES =====
-app.get('/api/rules',auth,(req,res)=>{const db=loadDB();res.json(db.rules.filter(r=>r.user_id===req.user.id).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)));});
-app.post('/api/rules',auth,(req,res)=>{
-  const db=loadDB(); const rule={id:uuidv4(),user_id:req.user.id,...req.body,status:1,created_at:new Date().toISOString()};
-  db.rules.push(rule); saveDB(db); res.json({success:true,id:rule.id});
-});
-app.patch('/api/rules/:id',auth,(req,res)=>{
-  const db=loadDB(); const rule=db.rules.find(r=>r.id===req.params.id&&r.user_id===req.user.id);
-  if(rule){rule.status=req.body.status;saveDB(db);} res.json({success:true});
-});
-app.delete('/api/rules/:id',auth,(req,res)=>{
-  const db=loadDB(); db.rules=db.rules.filter(r=>!(r.id===req.params.id&&r.user_id===req.user.id));
-  saveDB(db); res.json({success:true});
-});
-
-// ===== UTMs =====
-app.get('/api/utms',auth,(req,res)=>{const db=loadDB();res.json(db.utms.filter(u=>u.user_id===req.user.id).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)));});
-app.post('/api/utms',auth,(req,res)=>{
-  const db=loadDB(); const{url,utm_source,utm_medium,utm_campaign,utm_content,utm_term}=req.body;
-  if(!url||!utm_source) return res.status(400).json({error:'URL e fonte são obrigatórios'});
-  const params=new URLSearchParams({utm_source,...(utm_medium&&{utm_medium}),...(utm_campaign&&{utm_campaign}),...(utm_content&&{utm_content}),...(utm_term&&{utm_term})});
-  const full_url=`${url}?${params.toString()}`;
-  const utm={id:uuidv4(),user_id:req.user.id,url,utm_source,utm_medium:utm_medium||'',utm_campaign:utm_campaign||'',utm_content:utm_content||'',full_url,clicks:0,conversions:0,created_at:new Date().toISOString()};
-  db.utms.push(utm); saveDB(db); res.json({success:true,full_url,id:utm.id});
-});
-app.delete('/api/utms/:id',auth,(req,res)=>{
-  const db=loadDB(); db.utms=db.utms.filter(u=>!(u.id===req.params.id&&u.user_id===req.user.id));
-  saveDB(db); res.json({success:true});
-});
+    tbody.innerHTML = camps.map(c => {
+      const profit = (c.revenue || 0) - (c.spent || 0);
+      const margin = (c.revenue || 0) > 0 ? (profit / (c.revenue || 1)) * 100 : 0;
+      const roi = (c.spent || 0) > 0 ? (profit / c.spent) * 100 : 0;
+      const cpm = (c.impressions || 0) > 0 ? ((c.spent || 0) / c.impressions) * 1000 : 0;
+      const cpc = (c.clicks || 0) > 0 ? (c.spent || 0) / c.clicks : 0;
+      const ctr = (c.impressions || 0) > 0 ? ((c.clicks || 0) / c.impressions) * 100 : 0;
+      const cpi = (c.impressions || 0) > 0 ? (c.spent || 0) / c.impressions : 0;
+      const conv_cost = (c.conversas || 0) > 0 ? (c.spent || 0) / c.conversas : 0;
+      const ic = c.sales_count > 0 ? (c.revenue || 0) / c.sales_count : 0;
+      return `<tr>
+        <td class="col-fixed" style="min-width:70px">${statusBadge(c.status)}</td>
+        <td class="col-fixed" style="min-width:160px;left:70px"><div class="cn">${c.name}</div><div class="cd">${new Date(c.created_at).toLocaleDateString('pt-BR')}</div></td>
+        <td>${R(c.budget || 0)}</td>
+        <td>${Num(c.conversas || 0)}</td>
+        <td class="${conv_cost > 0 && conv_cost < 20 ? 'rg' : conv_cost > 0 ? 'rl' : ''}">${conv_cost > 0 ? R(conv_cost) : 'N/A'}</td>
+        <td>${c.sales_count || 0}</td>
+        <td class="${c.cpa > 0 && c.cpa < 20 ? 'rg' : c.cpa > 0 ? 'rl' : ''}">${c.cpa > 0 ? R(c.cpa) : 'N/A'}</td>
+        <td>${R(c.spent || 0)}</td>
+        <td>${R(c.revenue || 0)}</td>
+        <td class="${profit >= 0 ? 'rg' : 'rl'}">${R(profit)}</td>
+        <td class="${roasClass(c.roas)}">${Rx(c.roas)}</td>
+        <td class="${margin >= 30 ? 'rg' : margin >= 0 ? '' : 'rl'}">${Pct(margin)}</td>
+        <td class="${roi >= 50 ? 'rg' : roi >= 0 ? '' : 'rl'}">${Pct(roi)}</td>
+        <td>${ic > 0 ? R(ic) : 'N/A'}</td>
+        <td>${cpi > 0 ? 'R$ ' + cpi.toFixed(4) : 'N/A'}</td>
+        <td>${cpc > 0 ? R(cpc) : 'N/A'}</td>
+        <td>${ctr > 0 ? Pct(ctr) : 'N/A'}</td>
+        <td>${cpm > 0 ? R(cpm) : 'N/A'}</td>
+        <td>${Num(c.impressions || 0)}</td>
+        <td>${Num(c.clicks || 0)}</td>
+      </tr>`;
+    }).join('') + `
+    <tr class="tr-total">
+      <td></td><td></td>
+      <td style="font-weight:600;color:#e2e8f0">${camps.length} CAMPANHAS</td>
+      <td>${R(total_budget)}</td>
+      <td>${Num(total_conv)}</td>
+      <td>—</td>
+      <td>${total_cnt}</td>
+      <td class="${avg_cpa > 0 && avg_cpa < 20 ? 'rg' : 'rl'}">${avg_cpa > 0 ? R(avg_cpa) : 'N/A'}</td>
+      <td>${R(total_spent)}</td>
+      <td>${R(total_rev)}</td>
+      <td class="${total_profit >= 0 ? 'rg' : 'rl'}">${R(total_profit)}</td>
+      <td class="${roasClass(avg_roas)}">${Rx(avg_roas)}</td>
+      <td class="${total_margin >= 30 ? 'rg' : 'rl'}">${Pct(total_margin)}</td>
+      <td class="${total_roi >= 50 ? 'rg' : 'rl'}">${Pct(total_roi)}</td>
+      <td>—</td><td>—</td>
+      <td>${avg_cpc > 0 ? R(avg_cpc) : 'N/A'}</td>
+      <td>${avg_ctr > 0 ? Pct(avg_ctr) : 'N/A'}</td>
+      <td>${avg_cpm > 0 ? R(avg_cpm) : 'N/A'}</td>
+      <td>${Num(total_imp)}</td>
+      <td>${Num(total_clicks)}</td>
+    </tr>`;
+  } catch (e) { console.error('Erro platform:', e); }
+}
 
 // ===== REPORTS =====
-app.get('/api/reports',auth,(req,res)=>{
-  const db=loadDB(); const{period='7d'}=req.query; const days=period==='30d'?30:7;
-  const totalSpent=db.campaigns.filter(c=>c.user_id===req.user.id).reduce((s,c)=>s+(c.spent||0),0);
-  const dailySpent=totalSpent/days; const rows=[];
-  for(let i=days-1;i>=0;i--){
-    const d=new Date(); d.setDate(d.getDate()-i); d.setHours(0,0,0,0);
-    const next=new Date(d); next.setDate(next.getDate()+1);
-    const sales=db.sales.filter(s=>s.user_id===req.user.id&&s.status==='approved'&&new Date(s.created_at)>=d&&new Date(s.created_at)<next);
-    const revenue=sales.reduce((s,v)=>s+v.value,0); const count=sales.length;
-    const profit=revenue-dailySpent; const roas=dailySpent>0?revenue/dailySpent:0;
-    const cpa=count>0?dailySpent/count:0; const margin=revenue>0?(profit/revenue)*100:0;
-    rows.push({date:d.toLocaleDateString('pt-BR'),day:d.toLocaleDateString('pt-BR',{weekday:'long'}),sales:count,revenue,spent:dailySpent,profit,roas,cpa,margin});
-  }
-  res.json(rows);
-});
+async function loadReports() {
+  const period = document.getElementById('report-period')?.value || '7d';
+  try {
+    const rows = await fetch(`${API}/reports?period=${period}`, { headers: headers() }).then(r => r.json());
+    const totRev = rows.reduce((s, r) => s + r.revenue, 0);
+    const totSales = rows.reduce((s, r) => s + r.sales, 0);
+    const totSpent = rows.reduce((s, r) => s + r.spent, 0);
+    const totProfit = rows.reduce((s, r) => s + r.profit, 0);
+    const body = document.getElementById('tbody-reports');
+    if (body) body.innerHTML = rows.map(r => `
+      <tr>
+        <td>${r.date}</td><td style="text-transform:capitalize">${r.day}</td><td>${r.sales}</td>
+        <td class="${r.sales > 0 && r.cpa < 20 ? 'rg' : 'rl'}">${r.sales > 0 ? R(r.cpa) : 'N/A'}</td>
+        <td>${R(r.spent)}</td><td>R$ 0,00</td><td>${R(r.revenue)}</td>
+        <td class="${r.profit >= 0 ? 'rg' : 'rl'}">${R(r.profit)}</td>
+        <td class="${r.roas >= 3 ? 'rg' : 'rl'}">${r.sales > 0 ? Rx(r.roas) : 'N/A'}</td>
+        <td>${r.sales > 0 ? Pct(r.margin) : 'N/A'}</td>
+        <td>${r.sales > 0 ? Pct(r.margin) : 'N/A'}</td>
+        <td>N/A</td><td>N/A</td><td>0,00%</td>
+      </tr>`).join('') +
+      `<tr class="tr-total">
+        <td>${rows.length} DIAS</td><td>—</td><td>${totSales}</td>
+        <td class="${totSales > 0 && totSpent/totSales < 20 ? 'rg' : 'rl'}">${totSales > 0 ? R(totSpent/totSales) : 'N/A'}</td>
+        <td>${R(totSpent)}</td><td>R$ 0,00</td><td>${R(totRev)}</td>
+        <td class="${totProfit >= 0 ? 'rg' : 'rl'}">${R(totProfit)}</td>
+        <td class="${totRev > 0 && totRev/totSpent >= 3 ? 'rg' : 'rl'}">${totRev > 0 && totSpent > 0 ? Rx(totRev/totSpent) : 'N/A'}</td>
+        <td>${totRev > 0 ? Pct((totProfit/totRev)*100) : 'N/A'}</td>
+        <td>N/A</td><td>N/A</td><td>N/A</td><td>0,00%</td>
+      </tr>`;
+  } catch (e) { console.error('Erro reports:', e); }
+}
+
+function exportReport() {
+  const rows = document.querySelectorAll('#tbody-reports tr');
+  let csv = 'Data,Dia,Vendas,CPA,Gastos,Faturamento,Lucro,ROAS,Margem\n';
+  rows.forEach(r => { const cells = r.querySelectorAll('td'); csv += Array.from(cells).slice(0,9).map(c=>`"${c.textContent}"`).join(',') + '\n'; });
+  const a = document.createElement('a'); a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv); a.download = 'relatorio-trackzen.csv'; a.click();
+}
+
+// ===== RULES =====
+async function loadRules() {
+  try {
+    const rules = await fetch(`${API}/rules`, { headers: headers() }).then(r => r.json());
+    const mL = { cpa:'CPA', roas:'ROAS', spent_no_sale:'Gasto sem venda', spent:'Gasto total' };
+    const oL = { gt:'Maior que', lt:'Menor que', eq:'Igual a' };
+    const aL = { pause_campaign:'Pausar Campanhas', increase_budget:'Aumentar Orçamento', decrease_budget:'Diminuir Orçamento', notify:'Apenas notificar' };
+    const fL = { '1h':'A cada 1 hora', '2h':'A cada 2 horas', '3h':'A cada 3 horas', '6h':'A cada 6 horas', '24h':'Uma vez por dia' };
+    document.getElementById('tbody-rules').innerHTML = rules.map(r => `
+      <tr>
+        <td><input type="checkbox"></td>
+        <td><label class="toggle"><input type="checkbox" ${r.status ? 'checked' : ''} onchange="toggleRule('${r.id}',this.checked)"><div class="toggle-track"></div><div class="toggle-thumb"></div></label></td>
+        <td><div class="cn">${r.name}</div><div class="cd">Todos os produtos</div></td>
+        <td>Campanhas ativas</td>
+        <td><div class="cn">${aL[r.action]||r.action}</div><div class="cd">Se ${mL[r.condition_metric]||r.condition_metric} ${oL[r.condition_operator]||''} R$ ${r.condition_value}</div></td>
+        <td>${fL[r.frequency]||r.frequency}<br><span class="cd">Período: Hoje</span></td>
+        <td><button onclick="deleteRule('${r.id}')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px"><i class="ti ti-trash"></i></button></td>
+      </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;padding:24px;color:#4a5568">Nenhuma regra criada</td></tr>';
+  } catch (e) { console.error('Erro rules:', e); }
+}
+
+async function createRule() {
+  const body = { name:document.getElementById('rule-name').value, platform:document.getElementById('rule-platform').value, condition_metric:document.getElementById('rule-metric').value, condition_operator:document.getElementById('rule-op').value, condition_value:parseFloat(document.getElementById('rule-value').value), action:document.getElementById('rule-action').value, action_value:parseFloat(document.getElementById('rule-action-val').value)||0, frequency:document.getElementById('rule-freq').value };
+  if (!body.name || !body.condition_value) { alert('Preencha o nome e o valor da condição'); return; }
+  await fetch(`${API}/rules`, { method:'POST', headers:headers(), body:JSON.stringify(body) });
+  document.getElementById('rule-form').style.display = 'none';
+  loadRules();
+}
+
+async function toggleRule(id, status) { await fetch(`${API}/rules/${id}`, { method:'PATCH', headers:headers(), body:JSON.stringify({ status: status ? 1 : 0 }) }); }
+async function deleteRule(id) { if (!confirm('Excluir esta regra?')) return; await fetch(`${API}/rules/${id}`, { method:'DELETE', headers:headers() }); loadRules(); }
+
+// ===== PIXELS =====
+async function loadPixels() {
+  try {
+    const pixels = await fetch(`${API}/pixels`, { headers: headers() }).then(r => r.json());
+    document.getElementById('pixels-grid').innerHTML = pixels.map(px => `
+      <div class="card">
+        <div class="card-hd">
+          <div class="card-ttl">
+            <i class="ti ti-brand-${px.platform==='meta'?'facebook':px.platform==='tiktok'?'tiktok':'google'}" style="color:${px.platform==='meta'?'#60a5fa':px.platform==='tiktok'?'#fb923c':'#4ade80'}"></i>
+            ${px.platform.charAt(0).toUpperCase()+px.platform.slice(1)} Pixel
+          </div>
+          <span class="${px.status==='active'?'b-ok':'b-pause'}">${px.status==='active'?'Ativo':'Inativo'}</span>
+        </div>
+        ${px.pixel_id ? `
+        <div style="display:flex;flex-direction:column;gap:5px;font-size:11px">
+          <div style="display:flex;justify-content:space-between;color:#8892a4;padding:4px 0;border-bottom:1px solid #1e2130"><span>ID do pixel</span><span style="color:#a78bfa">${px.pixel_id}</span></div>
+          <div style="display:flex;justify-content:space-between;color:#8892a4;padding:4px 0;border-bottom:1px solid #1e2130"><span>Score de qualidade</span><span style="color:#a78bfa">${px.quality_score}/100</span></div>
+          <div style="display:flex;justify-content:space-between;color:#8892a4;padding:4px 0;border-bottom:1px solid #1e2130"><span>Eventos hoje</span><span style="color:#e2e8f0">${px.events_today.toLocaleString('pt-BR')}</span></div>
+          <div style="display:flex;justify-content:space-between;color:#8892a4;padding:4px 0"><span>Correspondência</span><span style="color:${px.match_rate>=80?'#22c55e':'#f59e0b'}">${px.match_rate}%</span></div>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:10px">
+          <button onclick="testPixel('${px.id}')" class="btn-upd" style="flex:1;justify-content:center"><i class="ti ti-player-play"></i> Testar disparo</button>
+          <button onclick="deletePixel('${px.id}')" style="background:none;border:1px solid #3b1212;border-radius:6px;color:#ef4444;padding:5px 10px;cursor:pointer"><i class="ti ti-trash"></i></button>
+        </div>` : `
+        <div style="font-size:11px;color:#4a5568;padding:8px 0">Nenhum pixel configurado ainda</div>`}
+      </div>`).join('') || '<div style="color:#4a5568;font-size:12px">Nenhum pixel cadastrado</div>';
+  } catch (e) { console.error('Erro pixels:', e); }
+}
+
+async function testPixel(id) {
+  const btn = event.target.closest('button');
+  btn.textContent = 'Testando...'; btn.disabled = true;
+  try {
+    const r = await fetch(`${API}/pixels/${id}/test`, { method:'POST', headers:headers() });
+    const d = await r.json();
+    alert(d.success ? '✅ Disparo realizado com sucesso!' : `❌ Erro: ${d.error}`);
+  } catch { alert('Erro ao testar pixel'); }
+  btn.innerHTML = '<i class="ti ti-player-play"></i> Testar disparo'; btn.disabled = false;
+}
+
+async function deletePixel(id) {
+  if (!confirm('Remover este pixel?')) return;
+  await fetch(`${API}/pixels/${id}`, { method:'DELETE', headers:headers() });
+  loadPixels();
+}
+
+async function addPixel() {
+  const platform = document.getElementById('px-platform').value;
+  const pixel_id = document.getElementById('px-id').value;
+  const access_token = document.getElementById('px-token').value;
+  const test_code = document.getElementById('px-testcode')?.value || '';
+  if (!pixel_id) { alert('Informe o ID do pixel'); return; }
+  if (!access_token) { alert('Informe o token de acesso'); return; }
+  const r = await fetch(`${API}/pixels`, { method:'POST', headers:headers(), body:JSON.stringify({ platform, pixel_id, access_token, test_code }) });
+  const d = await r.json();
+  if (d.success) { alert('✅ Pixel salvo com sucesso!'); document.getElementById('px-id').value=''; document.getElementById('px-token').value=''; loadPixels(); }
+}
+
+// ===== UTMs =====
+async function loadUtms() {
+  try {
+    const utms = await fetch(`${API}/utms`, { headers: headers() }).then(r => r.json());
+    document.getElementById('tbody-utms').innerHTML = utms.map(u => `
+      <tr>
+        <td><div class="cn">${u.utm_campaign||u.utm_source}</div><div class="cd">${u.utm_source} · ${u.utm_medium}</div></td>
+        <td>${u.conversions}</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+        <td>${u.clicks.toLocaleString('pt-BR')}</td><td class="rg">${u.conversions}</td>
+        <td><button onclick="deleteUtm('${u.id}')" style="background:none;border:none;color:#ef4444;cursor:pointer"><i class="ti ti-trash"></i></button></td>
+      </tr>`).join('') || '<tr><td colspan="12" style="text-align:center;padding:24px;color:#4a5568">Nenhum UTM criado</td></tr>';
+    document.getElementById('utm-list').innerHTML = utms.slice(0,5).map(u => `
+      <div style="background:#1a1e2e;border:1px solid #2d3348;border-radius:7px;padding:10px;margin-bottom:7px">
+        <div style="font-size:10px;color:#a78bfa;word-break:break-all;margin-bottom:5px">${u.full_url}</div>
+        <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
+          <span style="background:#2d3348;color:#8892a4;font-size:9px;padding:2px 7px;border-radius:4px">${u.utm_source}</span>
+          ${u.utm_medium?`<span style="background:#2d3348;color:#8892a4;font-size:9px;padding:2px 7px;border-radius:4px">${u.utm_medium}</span>`:''}
+          ${u.utm_campaign?`<span style="background:#2d3348;color:#8892a4;font-size:9px;padding:2px 7px;border-radius:4px">${u.utm_campaign}</span>`:''}
+          <span style="margin-left:auto;font-size:9px;color:#22c55e">${u.conversions} conversões</span>
+          <button onclick="navigator.clipboard.writeText('${u.full_url}');alert('Copiado!')" style="background:none;border:none;color:#6b7280;cursor:pointer;font-size:12px"><i class="ti ti-copy"></i></button>
+        </div>
+      </div>`).join('');
+  } catch (e) { console.error('Erro utms:', e); }
+}
+
+async function createUtm() {
+  const url=document.getElementById('utm-url').value; const utm_source=document.getElementById('utm-source').value;
+  const utm_medium=document.getElementById('utm-medium').value; const utm_campaign=document.getElementById('utm-campaign').value;
+  const utm_content=document.getElementById('utm-content').value; const utm_term=document.getElementById('utm-term').value;
+  if (!url||!utm_source) { alert('URL e fonte são obrigatórios'); return; }
+  const r = await fetch(`${API}/utms`, { method:'POST', headers:headers(), body:JSON.stringify({ url,utm_source,utm_medium,utm_campaign,utm_content,utm_term }) });
+  const d = await r.json();
+  document.getElementById('utm-generated').textContent = d.full_url;
+  document.getElementById('utm-result').style.display = 'block';
+  loadUtms();
+}
+
+async function deleteUtm(id) { if(!confirm('Excluir este UTM?')) return; await fetch(`${API}/utms/${id}`,{method:'DELETE',headers:headers()}); loadUtms(); }
+function copyUtm() { navigator.clipboard.writeText(document.getElementById('utm-generated').textContent); alert('Link copiado!'); }
 
 // ===== NOTIFICATIONS =====
-app.get('/api/notifications',auth,(req,res)=>{const db=loadDB();res.json(db.notifications.filter(n=>n.user_id===req.user.id).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)).slice(0,20));});
-app.patch('/api/notifications/read-all',auth,(req,res)=>{const db=loadDB();db.notifications.filter(n=>n.user_id===req.user.id).forEach(n=>n.read=1);saveDB(db);res.json({success:true});});
-
-// ===== USER =====
-app.get('/api/user',auth,(req,res)=>{
-  const db=loadDB(); const user=db.users.find(u=>u.id===req.user.id);
-  if(!user) return res.status(404).json({error:'Não encontrado'});
-  const{password,...safe}=user; res.json(safe);
-});
-
-app.patch('/api/user',auth,(req,res)=>{
-  const db=loadDB(); const user=db.users.find(u=>u.id===req.user.id);
-  if(!user) return res.status(404).json({error:'Não encontrado'});
-  if(req.body.name) user.name=req.body.name;
-  if(req.body.password) user.password=bcrypt.hashSync(req.body.password,10);
-  saveDB(db); res.json({success:true});
-});
-
-
-// ===== META ADS API ROUTES =====
-
-// Configurar conta de anúncio do Meta
-app.post('/api/meta/account', auth, (req, res) => {
-  const db = loadDB();
-  const { ad_account_id, access_token } = req.body;
-  if (!ad_account_id || !access_token) return res.status(400).json({ error: 'Conta e token são obrigatórios' });
-  
-  const user = db.users.find(u => u.id === req.user.id);
-  if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
-  
-  user.meta_ad_account = ad_account_id.startsWith('act_') ? ad_account_id : `act_${ad_account_id}`;
-  user.meta_access_token = access_token;
-  saveDB(db);
-  res.json({ success: true });
-});
-
-// Buscar dados reais das campanhas do Meta
-app.get('/api/meta/campaigns', auth, async (req, res) => {
-  const db = loadDB();
-  const user = db.users.find(u => u.id === req.user.id);
-  
-  if (!user?.meta_ad_account || !user?.meta_access_token) {
-    return res.status(400).json({ error: 'Conta do Meta não configurada', needsSetup: true });
-  }
-
+async function loadNotifications() {
   try {
-    // Buscar campanhas e insights em paralelo
-    const [campaignsResult, insightsResult] = await Promise.all([
-      fetchMetaCampaigns(user.meta_access_token, user.meta_ad_account),
-      fetchMetaAdData(user.meta_access_token, user.meta_ad_account)
-    ]);
+    const notifs = await fetch(`${API}/notifications`, { headers: headers() }).then(r => r.json());
+    document.getElementById('notif-list').innerHTML = notifs.map(n => `
+      <div class="cv-item">
+        <div style="display:flex;align-items:flex-start;gap:8px">
+          <div style="width:8px;height:8px;border-radius:50%;background:${n.type==='success'?'#22c55e':n.type==='warning'?'#f59e0b':'#ef4444'};margin-top:3px;flex-shrink:0"></div>
+          <div>
+            <div style="font-size:11px;color:#e2e8f0;font-weight:500">${n.title}</div>
+            <div style="font-size:10px;color:#6b7280">${n.message}</div>
+            <div style="font-size:9px;color:#4a5568;margin-top:2px">${new Date(n.created_at).toLocaleString('pt-BR')}</div>
+          </div>
+        </div>
+      </div>`).join('') || '<div style="color:#4a5568;font-size:12px;padding:12px 0">Nenhuma notificação</div>';
+  } catch (e) { console.error('Erro notifs:', e); }
+}
 
-    if (!campaignsResult.success) return res.status(400).json({ error: campaignsResult.error });
+async function markAllRead() {
+  await fetch(`${API}/notifications/read-all`, { method:'PATCH', headers:headers() });
+  document.getElementById('notif-badge').style.display = 'none';
+  loadNotifications();
+}
 
-    const insightsMap = {};
-    if (insightsResult.success) {
-      insightsResult.data.forEach(item => {
-        insightsMap[item.campaign_name] = item;
-      });
-    }
+// ===== SUBSCRIPTION =====
+async function loadSubscription() {
+  try {
+    const user = await fetch(`${API}/user`, { headers: headers() }).then(r => r.json());
+    const pct = Math.round((user.events_used / user.events_limit) * 100);
+    document.getElementById('plan-info').innerHTML = `${user.events_used.toLocaleString('pt-BR')} / ${user.events_limit.toLocaleString('pt-BR')} eventos usados — ${pct}%`;
+    document.getElementById('plan-desc').textContent = `Plano ${user.plan.charAt(0).toUpperCase()+user.plan.slice(1)} — R$ ${user.plan==='pro'?'97':user.plan==='scale'?'197':'0'},00 /mês`;
+    document.getElementById('plan-details').innerHTML = `
+      <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #1e2130;color:#8892a4"><span>Webhooks configurados:</span><span>1/1</span></div>
+      <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #1e2130;color:#8892a4"><span>Pixels utilizados:</span><span>2/5</span></div>
+      <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #1e2130;color:#8892a4"><span>Eventos usados:</span><span>${user.events_used.toLocaleString('pt-BR')}</span></div>
+      <div style="display:flex;justify-content:space-between;padding:5px 0;color:#8892a4"><span>Limite de eventos:</span><span>${user.events_limit.toLocaleString('pt-BR')}</span></div>
+      <div style="margin-top:10px"><div style="display:flex;justify-content:space-between;font-size:10px;color:#6b7280;margin-bottom:4px"><span>Eventos usados</span><span>${pct}%</span></div>
+      <div style="height:6px;background:#1e2130;border-radius:3px"><div style="height:6px;background:#7c3aed;border-radius:3px;width:${pct}%"></div></div></div>`;
+  } catch (e) { console.error('Erro subscription:', e); }
+}
 
-    // Combinar campanhas com insights e vendas do banco
-    const result = campaignsResult.data.map(camp => {
-      const insight = insightsMap[camp.name] || {};
-      const sales = db.sales.filter(s => s.user_id === req.user.id && s.campaign === camp.name && s.status === 'approved');
-      const revenue = sales.reduce((s, v) => s + v.value, 0);
-      const count = sales.length;
-      const spent = parseFloat(insight.spend || 0);
-      const impressions = parseInt(insight.impressions || 0);
-      const clicks = parseInt(insight.clicks || 0);
-      const cpm = parseFloat(insight.cpm || 0);
-      const cpc = parseFloat(insight.cpc || 0);
-      const ctr = parseFloat(insight.ctr || 0);
-      const roas = spent > 0 ? revenue / spent : 0;
-      const cpa = count > 0 ? spent / count : 0;
-      const profit = revenue - spent;
-      const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
-      const roi = spent > 0 ? (profit / spent) * 100 : 0;
-      const budget = parseFloat(camp.daily_budget || camp.lifetime_budget || 0) / 100;
+// ===== ACCOUNT =====
+async function loadAccount() {
+  try {
+    const user = await fetch(`${API}/user`, { headers: headers() }).then(r => r.json());
+    document.getElementById('acc-name').value = user.name;
+    document.getElementById('acc-email').value = user.email;
+    document.getElementById('sidebar-plan').textContent = user.plan.charAt(0).toUpperCase()+user.plan.slice(1);
+    const pct = Math.round((user.events_used/user.events_limit)*100);
+    document.getElementById('sidebar-events').textContent = `${user.events_used.toLocaleString('pt-BR')} / ${user.events_limit.toLocaleString('pt-BR')} eventos`;
+    document.getElementById('sidebar-events-fill').style.width = pct + '%';
+  } catch (e) { console.error('Erro account:', e); }
+}
 
-      // Salvar/atualizar campanha no banco
-      const existing = db.campaigns.find(c => c.user_id === req.user.id && c.name === camp.name);
-      if (existing) {
-        existing.status = camp.status === 'ACTIVE' ? 'active' : 'paused';
-        existing.spent = spent;
-        existing.impressions = impressions;
-        existing.clicks = clicks;
-        existing.budget = budget;
-      } else {
-        db.campaigns.push({
-          id: camp.id, user_id: req.user.id, name: camp.name, platform: 'meta',
-          status: camp.status === 'ACTIVE' ? 'active' : 'paused',
-          budget, spent, impressions, clicks, created_at: new Date().toISOString()
-        });
+async function saveAccount() {
+  const name = document.getElementById('acc-name').value;
+  const password = document.getElementById('acc-password').value;
+  const body = {};
+  if (name) body.name = name;
+  if (password) body.password = password;
+  await fetch(`${API}/user`, { method:'PATCH', headers:headers(), body:JSON.stringify(body) });
+  alert('✅ Dados salvos!');
+}
+
+// ===== INTEGRATIONS =====
+function showWebhookModal(platform) {
+  const names = { meta:'Meta Ads', tiktok:'TikTok Ads', google:'Google Ads', kwai:'Kwai Ads' };
+  document.getElementById('modal-title').textContent = `Integração — ${names[platform]||platform}`;
+  const url = `${window.location.origin}/api/webhook/${USER?.id||'SEU_ID'}`;
+  document.getElementById('modal-url').textContent = url;
+  document.getElementById('modal-webhook').style.display = 'flex';
+}
+
+function copyModalUrl() { navigator.clipboard.writeText(document.getElementById('modal-url').textContent); alert('URL copiada! Cole na sua plataforma de vendas.'); }
+function copyWebhook() { const url = document.getElementById('webhook-url').textContent; navigator.clipboard.writeText(url); alert('URL copiada!'); }
+
+// Auto refresh a cada 60s
+setInterval(() => {
+  if (document.querySelector('[data-page="resumo"].active')) loadSummary('today');
+}, 60000);
+
+
+// ===== COLUNAS REDIMENSIONAVEIS =====
+function makeColumnsResizable(tableWrap) {
+  const ths = tableWrap.querySelectorAll('thead th');
+  ths.forEach((th, i) => {
+    const old = th.querySelector('.col-resizer');
+    if (old) old.remove();
+    if (i === ths.length - 1) return;
+    const resizer = document.createElement('div');
+    resizer.className = 'col-resizer';
+    resizer.title = 'Arraste para redimensionar';
+    th.style.position = 'relative';
+    th.appendChild(resizer);
+
+    resizer.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startWidth = th.getBoundingClientRect().width;
+      resizer.classList.add('resizing');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+
+      function onMove(e) {
+        const diff = e.clientX - startX;
+        const newW = Math.max(50, startWidth + diff);
+        th.style.minWidth = newW + 'px';
+        th.style.maxWidth = newW + 'px';
+        th.style.width = newW + 'px';
       }
 
-      return {
-        id: camp.id, name: camp.name,
-        status: camp.status === 'ACTIVE' ? 'active' : 'paused',
-        platform: 'meta', budget, spent, impressions, clicks,
-        cpm, cpc, ctr, revenue, sales_count: count,
-        roas, cpa, profit, margin, roi,
-        created_at: new Date().toISOString()
-      };
+      function onUp() {
+        resizer.classList.remove('resizing');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      }
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
     });
-
-    saveDB(db);
-    res.json({ success: true, campaigns: result, source: 'meta_api' });
-  } catch(e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Verificar se conta Meta está configurada
-app.get('/api/meta/status', auth, (req, res) => {
-  const db = loadDB();
-  const user = db.users.find(u => u.id === req.user.id);
-  res.json({
-    configured: !!(user?.meta_ad_account && user?.meta_access_token),
-    ad_account: user?.meta_ad_account || null
   });
-});
+}
 
-// Buscar ad accounts disponíveis
-app.get('/api/meta/ad-accounts', auth, async (req, res) => {
-  const { access_token } = req.query;
-  if (!access_token) return res.status(400).json({ error: 'Token obrigatório' });
+// ===== META ADS API FRONTEND =====
+let metaConfigured = false;
+
+async function checkMetaStatus() {
   try {
-    const result = await new Promise((resolve) => {
-      const options = {
-        hostname: 'graph.facebook.com',
-        path: `/v18.0/me/adaccounts?fields=id,name,account_status&access_token=${access_token}`,
-        method: 'GET',
-      };
-      const req2 = https.request(options, (r) => {
-        let data = '';
-        r.on('data', chunk => data += chunk);
-        r.on('end', () => {
-          try { resolve(JSON.parse(data)); }
-          catch { resolve({ error: { message: 'Resposta inválida' } }); }
-        });
-      });
-      req2.on('error', e => resolve({ error: { message: e.message } }));
-      req2.end();
-    });
-    if (result.error) return res.status(400).json({ error: result.error.message });
-    res.json({ success: true, accounts: result.data || [] });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-
-// ===== ADMIN ROUTES =====
-function adminAuth(req, res, next) {
-  const db = loadDB();
-  const user = db.users.find(u => u.id === req.user?.id);
-  // Admin por role OU por email do dono
-  const isAdmin = user && (user.role === 'admin' || user.email === 'demo@trackzenpro.com');
-  if (!isAdmin) return res.status(403).json({ error: 'Acesso negado' });
-  next();
+    const r = await fetch(`${API}/meta/status`, { headers: headers() });
+    const d = await r.json();
+    metaConfigured = d.configured;
+    return d;
+  } catch { return { configured: false }; }
 }
 
-// Listar todos os usuários (admin)
-app.get('/api/admin/users', auth, adminAuth, (req, res) => {
-  const db = loadDB();
-  const users = db.users.map(u => {
-    const { password, ...safe } = u;
-    const salesCount = db.sales.filter(s => s.user_id === u.id).length;
-    return { ...safe, salesCount };
-  });
-  res.json(users);
-});
-
-// Atualizar plano do usuário (admin)
-app.patch('/api/admin/users/:id/plan', auth, adminAuth, (req, res) => {
-  const db = loadDB();
-  const user = db.users.find(u => u.id === req.params.id);
-  if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
-  const { plan, events_limit } = req.body;
-  if (plan) user.plan = plan;
-  if (events_limit) user.events_limit = events_limit;
-  saveDB(db);
-  res.json({ success: true });
-});
-
-// Tornar usuário admin
-app.patch('/api/admin/users/:id/role', auth, adminAuth, (req, res) => {
-  const db = loadDB();
-  const user = db.users.find(u => u.id === req.params.id);
-  if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
-  user.role = req.body.role;
-  saveDB(db);
-  res.json({ success: true });
-});
-
-// Stats gerais (admin)
-app.get('/api/admin/stats', auth, adminAuth, (req, res) => {
-  const db = loadDB();
-  res.json({
-    totalUsers: db.users.length,
-    totalSales: db.sales.length,
-    totalRevenue: db.sales.filter(s => s.status === 'approved').reduce((s, v) => s + v.value, 0),
-    planBreakdown: {
-      free: db.users.filter(u => u.plan === 'free').length,
-      pro: db.users.filter(u => u.plan === 'pro').length,
-      scale: db.users.filter(u => u.plan === 'scale').length,
-    },
-    recentUsers: db.users.slice(-5).map(u => { const {password,...s}=u; return s; })
-  });
-});
-
-// Ativar plano manualmente (para quando receber pagamento)
-app.post('/api/activate-plan', auth, (req, res) => {
-  const { plan, activation_code } = req.body;
-  // Código simples de ativação — você envia manualmente para o usuário após pagamento
-  const validCodes = {
-    'TRACKZEN-PRO-2024': 'pro',
-    'TRACKZEN-SCALE-2024': 'scale',
-  };
-  if (!validCodes[activation_code]) return res.status(400).json({ error: 'Código inválido' });
-  const db = loadDB();
-  const user = db.users.find(u => u.id === req.user.id);
-  if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
-  user.plan = validCodes[activation_code];
-  user.events_limit = user.plan === 'pro' ? 100000 : 999999999;
-  user.plan_activated_at = new Date().toISOString();
-  saveDB(db);
-  res.json({ success: true, plan: user.plan });
-});
-
-
-// ===== PUSH NOTIFICATIONS =====
-const webpush_subs = {}; // armazenar subscriptions por userId
-
-app.post('/api/push/subscribe', auth, (req, res) => {
-  const db = loadDB();
-  const { subscription } = req.body;
-  if (!db.push_subscriptions) db.push_subscriptions = {};
-  if (!db.push_subscriptions[req.user.id]) db.push_subscriptions[req.user.id] = [];
-  // Evitar duplicatas
-  const existing = db.push_subscriptions[req.user.id].find(s => s.endpoint === subscription.endpoint);
-  if (!existing) {
-    db.push_subscriptions[req.user.id].push(subscription);
-    saveDB(db);
-  }
-  res.json({ success: true });
-});
-
-app.delete('/api/push/unsubscribe', auth, (req, res) => {
-  const db = loadDB();
-  const { endpoint } = req.body;
-  if (db.push_subscriptions?.[req.user.id]) {
-    db.push_subscriptions[req.user.id] = db.push_subscriptions[req.user.id].filter(s => s.endpoint !== endpoint);
-    saveDB(db);
-  }
-  res.json({ success: true });
-});
-
-// Função para enviar notificação push local (sem chave VAPID por enquanto)
-function sendPushToUser(db, userId, title, body) {
-  // Salvar notificação no banco para ser lida pelo app
-  if (!db.notifications) db.notifications = [];
-  db.notifications.unshift({
-    id: uuidv4(), user_id: userId,
-    title, message: body,
-    type: 'push', read: 0,
-    created_at: new Date().toISOString()
-  });
+async function loadMetaAdAccounts() {
+  const token = document.getElementById('meta-token-input')?.value;
+  if (!token) { alert('Cole o token de acesso primeiro!'); return; }
+  const btn = document.getElementById('btn-load-accounts');
+  if (btn) { btn.textContent = 'Carregando...'; btn.disabled = true; }
+  try {
+    const r = await fetch(`${API}/meta/ad-accounts?access_token=${encodeURIComponent(token)}`, { headers: headers() });
+    const d = await r.json();
+    if (!d.success) { alert('Erro: ' + d.error); return; }
+    const sel = document.getElementById('meta-account-select');
+    if (sel) {
+      sel.innerHTML = '<option value="">Selecione a conta...</option>' +
+        d.accounts.map(a => `<option value="${a.id}">${a.name} (${a.id})</option>`).join('');
+      sel.style.display = 'block';
+      document.getElementById('btn-save-meta').style.display = 'inline-flex';
+    }
+  } catch(e) { alert('Erro ao buscar contas: ' + e.message); }
+  finally { if (btn) { btn.textContent = 'Buscar contas'; btn.disabled = false; } }
 }
 
-app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'public/index.html')));
+async function saveMetaAccount() {
+  const token = document.getElementById('meta-token-input')?.value;
+  const account = document.getElementById('meta-account-select')?.value;
+  if (!token || !account) { alert('Selecione uma conta!'); return; }
+  try {
+    const r = await fetch(`${API}/meta/account`, { method:'POST', headers:headers(), body:JSON.stringify({ ad_account_id: account, access_token: token }) });
+    const d = await r.json();
+    if (d.success) {
+      alert('✅ Conta Meta configurada! Clique em Atualizar para puxar os dados reais.');
+      metaConfigured = true;
+      document.getElementById('meta-setup-card')?.style && (document.getElementById('meta-setup-card').style.display = 'none');
+      loadPlatform('meta');
+    }
+  } catch(e) { alert('Erro: ' + e.message); }
+}
 
-app.listen(PORT,()=>{
-  console.log('\n╔══════════════════════════════════════════╗');
-  console.log('║       TrackZen Pro — Etapa 2 ativa!      ║');
-  console.log('╠══════════════════════════════════════════╣');
-  console.log('║  Acesse:  http://localhost:3000           ║');
-  console.log('║  Email:   demo@trackzenpro.com           ║');
-  console.log('║  Senha:   demo123                        ║');
-  console.log('╠══════════════════════════════════════════╣');
-  console.log('║  ✅ Meta CAPI integrado                  ║');
-  console.log('║  ✅ TikTok Events API integrado          ║');
-  console.log('║  ✅ Webhook universal ativo              ║');
-  console.log('║  ✅ Log de eventos ativo                 ║');
-  console.log('╚══════════════════════════════════════════╝\n');
-});
+async function loadMetaRealData() {
+  try {
+    const r = await fetch(`${API}/meta/campaigns`, { headers: headers() });
+    const d = await r.json();
+    if (d.needsSetup) return null;
+    if (!d.success) { console.log('Meta API erro:', d.error); return null; }
+    return d.campaigns;
+  } catch { return null; }
+}
+
+function showMetaSetupIfNeeded() {
+  const card = document.getElementById('meta-setup-card');
+  if (card) card.style.display = metaConfigured ? 'none' : 'block';
+}
+
+// ===== ADMIN =====
+async function loadAdmin() {
+  try {
+    const [statsR, usersR] = await Promise.all([
+      fetch(`${API}/admin/stats`, { headers: headers() }),
+      fetch(`${API}/admin/users`, { headers: headers() })
+    ]);
+    
+    if (!statsR.ok) { console.log('Não é admin'); return; }
+    
+    const stats = await statsR.json();
+    const users = await usersR.json();
+
+    document.getElementById('admin-stats').innerHTML = [
+      { lbl: 'Total usuários', val: stats.totalUsers, ico: 'ti-users', bg: '#1e3a5f', ic: '#60a5fa' },
+      { lbl: 'Total vendas', val: stats.totalSales, ico: 'ti-shopping-cart', bg: '#14532d', ic: '#4ade80' },
+      { lbl: 'Receita total', val: R(stats.totalRevenue), ico: 'ti-currency-dollar', bg: '#2e1a4f', ic: '#a78bfa' },
+      { lbl: 'Planos Pro/Scale', val: (stats.planBreakdown.pro || 0) + (stats.planBreakdown.scale || 0), ico: 'ti-crown', bg: '#422006', ic: '#fb923c' },
+    ].map(k => `
+      <div class="kpi">
+        <div class="kpi-ico" style="background:${k.bg}"><i class="ti ${k.ico}" style="color:${k.ic}"></i></div>
+        <div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div></div>
+      </div>`).join('');
+
+    document.getElementById('tbody-admin-users').innerHTML = users.map(u => `
+      <tr>
+        <td><div class="cn">${u.name}</div></td>
+        <td style="color:#6b7280">${u.email}</td>
+        <td>
+          <select onchange="updateUserPlan('${u.id}', this.value)" style="background:#1a1e2e;border:1px solid #2d3348;border-radius:5px;color:#e2e8f0;padding:3px 6px;font-size:10px">
+            <option value="free" ${u.plan==='free'?'selected':''}>Free</option>
+            <option value="pro" ${u.plan==='pro'?'selected':''}>Pro</option>
+            <option value="scale" ${u.plan==='scale'?'selected':''}>Scale</option>
+          </select>
+        </td>
+        <td>${(u.events_used||0).toLocaleString('pt-BR')} / ${(u.events_limit||1000).toLocaleString('pt-BR')}</td>
+        <td>${u.salesCount || 0}</td>
+        <td style="color:#6b7280">${new Date(u.created_at).toLocaleDateString('pt-BR')}</td>
+        <td>
+          <button onclick="resetUserEvents('${u.id}')" class="btn-upd" style="font-size:10px;padding:3px 8px">
+            <i class="ti ti-refresh" style="font-size:11px"></i> Reset eventos
+          </button>
+        </td>
+      </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;padding:24px;color:#4a5568">Nenhum usuário</td></tr>';
+
+  } catch(e) { console.error('Erro admin:', e); }
+}
+
+async function updateUserPlan(userId, plan) {
+  const limits = { free: 1000, pro: 100000, scale: 999999999 };
+  await fetch(`${API}/admin/users/${userId}/plan`, {
+    method: 'PATCH', headers: headers(),
+    body: JSON.stringify({ plan, events_limit: limits[plan] })
+  });
+  alert(`✅ Plano atualizado para ${plan}!`);
+}
+
+async function resetUserEvents(userId) {
+  const db_resp = await fetch(`${API}/admin/users/${userId}/plan`, {
+    method: 'PATCH', headers: headers(),
+    body: JSON.stringify({ events_used: 0 })
+  });
+  alert('✅ Eventos resetados!');
+  loadAdmin();
+}
+
+// Mostrar/esconder admin na sidebar baseado no papel do usuário
+function checkAdminAccess() {
+  setTimeout(() => {
+    try {
+      const storedUser = JSON.parse(localStorage.getItem('tzuser') || '{}');
+      const adminEmails = ['demo@trackzenpro.com'];
+      const nav = document.getElementById('nav-admin');
+      if (!nav) { console.log('nav-admin element not found'); return; }
+      if (adminEmails.includes(storedUser.email)) {
+        nav.removeAttribute('style');
+        nav.style.cssText = 'display:flex !important;align-items:center;gap:8px;padding:7px 12px;border-radius:7px;cursor:pointer;color:#a78bfa;font-size:12px;margin:1px 6px;';
+        console.log('Admin shown for:', storedUser.email);
+      }
+    } catch(e) { console.error('Admin check error:', e); }
+  }, 800);
+}
+
+// ===== PWA PUSH NOTIFICATIONS =====
+async function registerPush() {
+  try {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    const reg = await navigator.serviceWorker.ready;
+    const existing = await reg.pushManager.getSubscription();
+    if (existing) {
+      await fetch(`${API}/push/subscribe`, { method:'POST', headers:headers(), body:JSON.stringify({ subscription: existing }) });
+      return;
+    }
+  } catch(e) { console.log('Push:', e); }
+}
+
+// Solicitar permissão assim que logar
+async function requestPushPermission() {
+  try {
+    if (!('Notification' in window)) return;
+    if (Notification.permission === 'default') {
+      await Notification.requestPermission();
+    }
+    await registerPush();
+  } catch(e) { console.log('Permission:', e); }
+}
+
+// Notificação de venda (chamada quando webhook recebe venda)
+function notifyNewSale(value, platform, campaign) {
+  if (typeof showLocalNotification === 'function') {
+    showLocalNotification(
+      '🛒 Venda aprovada!',
+      `R$ ${parseFloat(value).toFixed(2)} — ${platform} · ${campaign}`,
+      { url: '/' }
+    );
+  }
+}
