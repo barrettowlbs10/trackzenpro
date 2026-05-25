@@ -1,4 +1,4 @@
-const API = 'http://localhost:3000/api';
+const API = window.location.origin + '/api';
 let TOKEN = localStorage.getItem('tztoken');
 let USER = JSON.parse(localStorage.getItem('tzuser') || 'null');
 let charts = {};
