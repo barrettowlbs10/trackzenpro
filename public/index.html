@@ -4,6 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TrackZen Pro</title>
+
+<!-- PWA -->
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#7c3aed">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="TrackZen Pro">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="description" content="Plataforma de rastreamento de campanhas e vendas">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <link rel="stylesheet" href="css/style.css">
@@ -88,7 +97,10 @@
           <div class="user-av" id="user-av">U</div>
           <div><div class="user-name" id="user-name">Usuário</div><div class="user-role">Admin</div></div>
         </div>
-        <div class="top-btn" onclick="logout()" title="Sair"><i class="ti ti-logout"></i></div>
+        <button id="install-app-btn" onclick="installApp()" class="top-btn" style="display:none;background:#7c3aed;border-color:#7c3aed;color:#fff" title="Instalar app no celular">
+  <i class="ti ti-download"></i> Instalar app
+</button>
+<div class="top-btn" onclick="logout()" title="Sair"><i class="ti ti-logout"></i></div>
       </div>
     </div>
 
@@ -458,5 +470,74 @@
 </div>
 
 <script src="js/app.js"></script>
+<script>
+// Registrar Service Worker
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js')
+      .then(reg => {
+        console.log('SW registrado:', reg.scope);
+        window._swReg = reg;
+      })
+      .catch(err => console.log('SW erro:', err));
+  });
+}
+
+// Solicitar permissão de notificação
+async function requestNotificationPermission() {
+  if (!('Notification' in window)) return false;
+  if (Notification.permission === 'granted') return true;
+  if (Notification.permission === 'denied') return false;
+  const permission = await Notification.requestPermission();
+  return permission === 'granted';
+}
+
+// Mostrar notificação local
+async function showLocalNotification(title, body, data = {}) {
+  const hasPermission = await requestNotificationPermission();
+  if (!hasPermission) return;
+  
+  if ('serviceWorker' in navigator && window._swReg) {
+    window._swReg.showNotification(title, {
+      body,
+      icon: '/icons/icon-192.png',
+      badge: '/icons/icon-192.png',
+      vibrate: [200, 100, 200],
+      data,
+      tag: 'trackzen-' + Date.now()
+    });
+  } else {
+    new Notification(title, { body, icon: '/icons/icon-192.png' });
+  }
+}
+
+// Botão instalar app
+let deferredPrompt;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPrompt = e;
+  const btn = document.getElementById('install-app-btn');
+  if (btn) btn.style.display = 'flex';
+});
+
+function installApp() {
+  if (deferredPrompt) {
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.then(choice => {
+      if (choice.outcome === 'accepted') {
+        const btn = document.getElementById('install-app-btn');
+        if (btn) btn.style.display = 'none';
+      }
+      deferredPrompt = null;
+    });
+  }
+}
+
+window.addEventListener('appinstalled', () => {
+  console.log('App instalado!');
+  const btn = document.getElementById('install-app-btn');
+  if (btn) btn.style.display = 'none';
+});
+</script>
 </body>
 </html>
