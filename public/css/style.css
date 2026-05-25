@@ -187,10 +187,17 @@ tr:hover .col-fixed{background:#1a1e2e}
 .platform-table-wrap tbody tr:hover td{background:#1a1e2e;}
 .platform-table-wrap .tr-total td{background:#1a1e2e;font-weight:600;color:#e2e8f0;border-top:1px solid #2d3348;font-size:11px;}
 
+
 /* ===== COLUNAS REDIMENSIONAVEIS ===== */
-.platform-table-wrap thead th{position:relative;}
-.col-resizer{position:absolute;right:0;top:0;height:100%;width:5px;cursor:col-resize;user-select:none;z-index:10;background:transparent;}
-.col-resizer:hover,.col-resizer.resizing{background:#7c3aed;opacity:.7;}
-.platform-table-wrap thead th{border-right:1px solid #2d3348;}
+.platform-table-wrap thead th{position:relative;border-right:1px solid #2d3348;}
 .platform-table-wrap tbody td{border-right:1px solid #1e2130;}
-.platform-table-wrap tbody tr:last-child td{border-bottom:none;}
+.col-resizer{
+  position:absolute;right:-3px;top:0;
+  height:100%;width:7px;
+  cursor:col-resize;
+  z-index:10;
+  background:transparent;
+  border-radius:3px;
+}
+.col-resizer:hover{background:#7c3aed;opacity:.8;}
+.col-resizer.resizing{background:#7c3aed;opacity:1;}

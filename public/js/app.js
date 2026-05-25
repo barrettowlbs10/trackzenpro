@@ -273,6 +273,11 @@ async function loadPlatform(platform) {
       }
     }
 
+    setTimeout(() => {
+      const wrap = document.querySelector('.platform-table-wrap');
+      if (wrap) makeColumnsResizable(wrap);
+    }, 100);
+
     tbody.innerHTML = camps.map(c => {
       const profit = (c.revenue || 0) - (c.spent || 0);
       const margin = (c.revenue || 0) > 0 ? (profit / (c.revenue || 1)) * 100 : 0;
@@ -580,3 +585,48 @@ function copyWebhook() { const url = document.getElementById('webhook-url').text
 setInterval(() => {
   if (document.querySelector('[data-page="resumo"].active')) loadSummary('today');
 }, 60000);
+
+
+// ===== COLUNAS REDIMENSIONAVEIS =====
+function makeColumnsResizable(tableWrap) {
+  const ths = tableWrap.querySelectorAll('thead th');
+  ths.forEach((th, i) => {
+    const old = th.querySelector('.col-resizer');
+    if (old) old.remove();
+    if (i === ths.length - 1) return;
+    const resizer = document.createElement('div');
+    resizer.className = 'col-resizer';
+    resizer.title = 'Arraste para redimensionar';
+    th.style.position = 'relative';
+    th.appendChild(resizer);
+
+    resizer.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startWidth = th.getBoundingClientRect().width;
+      resizer.classList.add('resizing');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+
+      function onMove(e) {
+        const diff = e.clientX - startX;
+        const newW = Math.max(50, startWidth + diff);
+        th.style.minWidth = newW + 'px';
+        th.style.maxWidth = newW + 'px';
+        th.style.width = newW + 'px';
+      }
+
+      function onUp() {
+        resizer.classList.remove('resizing');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      }
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
+}
